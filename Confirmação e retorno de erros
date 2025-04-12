@@ -2,13 +2,13 @@ import tkinter as tk
 from tkinter import messagebox as mb
 
 def resposta():
-    mb.showerror("Resposta","Lamento, resposta incorreta")
+    mb.showerror("Resposta","Felizado de maneira incorreta")
 def verificacao():
-    if mb.askyesno("Checar","Deseja prosseguir??"):
+    if mb.askyesno("Confirmação","Deseja prosseguir??"):
         mb.showwarning("Sim,", " Erro inesperado !Contatar equipe de desenvolvimeto")
     else:
-        mb.showinfo("No", 'Cancelado pelo usuário')
+        mb.showinfo("No", 'Operação Cancelada pelo Usuário')
 
-tk.Button(text='Confirmar', command=verificacao).pack(fill=tk.X)
-tk.Button(text='Encerrar', command=resposta).pack(fill=tk.X)
+tk.Button(text='Confirmar', command=verificacao).grid(row=1, column=1)
+tk.Button(text='Encerrar', command=resposta).grid(row=1, column=2)
 tk.mainloop()
