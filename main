@@ -1,0 +1,7 @@
+import tkinter as tk
+from tkinter import ttk
+janela = tk.Tk()
+janela.title("Aplicativo GUI")
+janela.mainloop()
+
+ttk.Label(janela, text="Componente Label do Tkinter").grid(column=0, row=0)
