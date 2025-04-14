@@ -1,0 +1,187 @@
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+import json
+import os
+from datetime import datetime
+
+# Arquivos de dados
+ARQUIVO_CLIENTES = "clientes.json"
+ARQUIVO_PEDIDOS = "pedidos.json"
+ARQUIVO_USUARIOS = "usuarios.json"
+ARQUIVO_CARDAPIO = "cardapio.json"
+
+# Dados
+clientes = []
+pedidos = []
+usuarios = {}
+cardapio = {}
+contador_pedidos = 1
+
+def carregar_dados():
+    global clientes, pedidos, usuarios, cardapio, contador_pedidos
+    if os.path.exists(ARQUIVO_CLIENTES):
+        with open(ARQUIVO_CLIENTES, encoding="utf-8") as f:
+            clientes = json.load(f)
+    if os.path.exists(ARQUIVO_PEDIDOS):
+        with open(ARQUIVO_PEDIDOS, encoding="utf-8") as f:
+            pedidos = json.load(f)
+            if pedidos:
+                contador_pedidos = int(pedidos[-1]["id"].split("-")[1]) + 1
+    if os.path.exists(ARQUIVO_USUARIOS):
+        with open(ARQUIVO_USUARIOS, encoding="utf-8") as f:
+            usuarios = json.load(f)
+    else:
+        usuarios.update({
+            "admin": {"senha": "admin", "tipo": "Administrador"},
+            "funcionario1": {"senha": "1234", "tipo": "Funcionário"},
+        })
+    if os.path.exists(ARQUIVO_CARDAPIO):
+        with open(ARQUIVO_CARDAPIO, encoding="utf-8") as f:
+            cardapio = json.load(f)
+    else:
+        cardapio.update({
+            "sabores": ["Calabresa", "Frango com Catupiry", "Marguerita", "Portuguesa"],
+            "bebidas": ["Coca-Cola", "Guaraná", "Água"]
+        })
+
+def salvar_dados():
+    with open(ARQUIVO_CLIENTES, "w", encoding="utf-8") as f:
+        json.dump(clientes, f, indent=4)
+    with open(ARQUIVO_PEDIDOS, "w", encoding="utf-8") as f:
+        json.dump(pedidos, f, indent=4)
+    with open(ARQUIVO_USUARIOS, "w", encoding="utf-8") as f:
+        json.dump(usuarios, f, indent=4)
+    with open(ARQUIVO_CARDAPIO, "w", encoding="utf-8") as f:
+        json.dump(cardapio, f, indent=4)
+
+# Interface principal
+carregar_dados()
+
+root = tk.Tk()
+root.title("Sistema Pizzaria")
+root.geometry("800x600")
+root.configure(bg="#2C3E50")
+
+def criar_tela_login():
+    global user_entry, pass_entry, login_frame
+    login_frame = tk.Frame(root)
+    login_frame.pack(expand=True)
+
+    tk.Label(login_frame, text="Usuário:").pack()
+    user_entry = tk.Entry(login_frame)
+    user_entry.pack()
+
+    tk.Label(login_frame, text="Senha:").pack()
+    pass_entry = tk.Entry(login_frame, show="*")
+    pass_entry.pack()
+
+    tk.Button(login_frame, text="Entrar", command=verificar_login).pack()
+
+def verificar_login():
+    usuario = user_entry.get()
+    senha = pass_entry.get()
+
+    if usuario in usuarios and usuarios[usuario]["senha"] == senha:
+        messagebox.showinfo("Login", f"Bem-vindo, {usuarios[usuario]['tipo']}!")
+        abrir_sistema(usuarios[usuario]["tipo"])
+    else:
+        messagebox.showerror("Erro", "Usuário ou senha incorretos.")
+
+def abrir_sistema(tipo_usuario):
+    login_frame.pack_forget()
+    notebook = ttk.Notebook(root)
+    notebook.pack(expand=True, fill="both")
+
+    aba_pedido = ttk.Frame(notebook)
+    aba_funcionarios = ttk.Frame(notebook)
+    aba_consulta_master = ttk.Frame(notebook)
+    notebook.add(aba_pedido, text="Fazer Pedido")
+    
+    if tipo_usuario == "Administrador":
+        notebook.add(aba_funcionarios, text="Funcionários")
+        notebook.add(aba_consulta_master, text="Consulta Master")
+    
+    # Aba Fazer Pedido
+    tk.Label(aba_pedido, text="Sabor - Metade 1:").grid(row=0, column=0, padx=5, pady=5)
+    metade1_cb = ttk.Combobox(aba_pedido, values=cardapio["sabores"])
+    metade1_cb.grid(row=0, column=1, padx=5, pady=5)
+
+    tk.Label(aba_pedido, text="Sabor - Metade 2:").grid(row=1, column=0, padx=5, pady=5)
+    metade2_cb = ttk.Combobox(aba_pedido, values=cardapio["sabores"])
+    metade2_cb.grid(row=1, column=1, padx=5, pady=5)
+
+    tk.Label(aba_pedido, text="Bebida:").grid(row=2, column=0, padx=5, pady=5)
+    bebida_cb = ttk.Combobox(aba_pedido, values=cardapio["bebidas"])
+    bebida_cb.grid(row=2, column=1, padx=5, pady=5)
+
+    tk.Label(aba_pedido, text="Endereço:").grid(row=3, column=0, padx=5, pady=5)
+    endereco_entry = tk.Entry(aba_pedido)
+    endereco_entry.grid(row=3, column=1, padx=5, pady=5)
+
+    def fazer_pedido():
+        global contador_pedidos
+        sabor1 = metade1_cb.get()
+        sabor2 = metade2_cb.get()
+        bebida = bebida_cb.get()
+        endereco = endereco_entry.get()
+
+        if sabor1 and sabor2 and bebida and endereco:
+            pedido = {
+                "id": f"P-{contador_pedidos:04d}",
+                "sabores": f"{sabor1} / {sabor2}",
+                "bebida": bebida,
+                "endereco": endereco,
+                "entregue": False,
+                "funcionario": "FuncionarioX",  # Substituir com o nome do funcionário logado
+                "hora": datetime.now().strftime("%H:%M:%S"),
+                "data": datetime.now().strftime("%d/%m/%Y")
+            }
+            pedidos.append(pedido)
+            contador_pedidos += 1
+            salvar_dados()
+            messagebox.showinfo("Pedido", f"Pedido {pedido['id']} realizado!")
+            metade1_cb.set("")
+            metade2_cb.set("")
+            bebida_cb.set("")
+            endereco_entry.delete(0, tk.END)
+        else:
+            messagebox.showerror("Erro", "Preencha todos os campos.")
+
+    tk.Button(aba_pedido, text="Fazer Pedido", command=fazer_pedido).grid(row=4, columnspan=2, pady=10)
+
+    # --- Aba Consulta Master (Administrador) ---
+    if tipo_usuario == "Administrador":
+        tk.Label(aba_consulta_master, text="Pesquisar Pedido (ID):").grid(row=0, column=0, padx=5, pady=5)
+        pedido_id_entry = tk.Entry(aba_consulta_master)
+        pedido_id_entry.grid(row=0, column=1, padx=5, pady=5)
+
+        def consultar_pedido():
+            pedido_id = pedido_id_entry.get()
+            pedido_encontrado = None
+            for p in pedidos:
+                if p["id"] == pedido_id:
+                    pedido_encontrado = p
+                    break
+            
+            if pedido_encontrado:
+                messagebox.showinfo("Consulta", f"ID: {pedido_encontrado['id']}\n"
+                                              f"Funcionário: {pedido_encontrado['funcionario']}\n"
+                                              f"Hora: {pedido_encontrado['hora']}\n"
+                                              f"Data: {pedido_encontrado['data']}\n"
+                                              f"Sabor: {pedido_encontrado['sabores']}\n"
+                                              f"Bebida: {pedido_encontrado['bebida']}\n"
+                                              f"Endereço: {pedido_encontrado['endereco']}")
+            else:
+                messagebox.showerror("Erro", "Pedido não encontrado.")
+        
+        tk.Button(aba_consulta_master, text="Consultar", command=consultar_pedido).grid(row=1, columnspan=2, pady=10)
+
+def logout():
+    for widget in root.winfo_children():
+        widget.destroy()
+    criar_tela_login()
+
+root.protocol("WM_DELETE_WINDOW", lambda: (salvar_dados(), root.destroy()))
+criar_tela_login()
+root.mainloop()
