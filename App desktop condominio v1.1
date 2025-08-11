@@ -1,0 +1,168 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+# ------------------- TELA DE CADASTRO -------------------
+class CadastroCondominos:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Cadastro de Condôminos")
+        self.root.geometry("800x500")
+
+        # --- Frame do formulário ---
+        form_frame = ttk.Frame(root, padding=10)
+        form_frame.pack(side=tk.TOP, fill=tk.X)
+
+        # Nome
+        ttk.Label(form_frame, text="Nome:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.nome_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self.nome_var, width=30).grid(row=0, column=1, padx=5, pady=5)
+
+        # CPF
+        ttk.Label(form_frame, text="CPF:").grid(row=0, column=2, sticky=tk.W, padx=5, pady=5)
+        self.cpf_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self.cpf_var, width=20).grid(row=0, column=3, padx=5, pady=5)
+
+        # Quantidade Moradores
+        ttk.Label(form_frame, text="Quantidade Moradores:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.qtde_var = tk.IntVar(value=1)
+        ttk.Spinbox(form_frame, from_=1, to=20, textvariable=self.qtde_var, width=5).grid(row=1, column=1, padx=5, pady=5)
+
+        # Bloco
+        ttk.Label(form_frame, text="Bloco:").grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
+        self.bloco_var = tk.StringVar()
+        bloco_combo = ttk.Combobox(form_frame, textvariable=self.bloco_var, width=18, state="readonly")
+        bloco_combo['values'] = ("A", "B", "C", "D", "E")
+        bloco_combo.current(0)
+        bloco_combo.grid(row=1, column=3, padx=5, pady=5)
+
+        # Número do apartamento
+        ttk.Label(form_frame, text="Nº do Apartamento:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        self.apto_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self.apto_var, width=10).grid(row=2, column=1, padx=5, pady=5)
+
+        # Possui animais
+        ttk.Label(form_frame, text="Possui Animais?").grid(row=2, column=2, sticky=tk.W, padx=5, pady=5)
+        self.animais_var = tk.StringVar(value="Não")
+        animais_combo = ttk.Combobox(form_frame, textvariable=self.animais_var, width=18, state="readonly")
+        animais_combo['values'] = ("Sim", "Não")
+        animais_combo.current(1)
+        animais_combo.grid(row=2, column=3, padx=5, pady=5)
+
+        # Aluguel em dia
+        ttk.Label(form_frame, text="Aluguel em dia?").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.aluguel_var = tk.StringVar(value="Sim")
+        aluguel_combo = ttk.Combobox(form_frame, textvariable=self.aluguel_var, width=18, state="readonly")
+        aluguel_combo['values'] = ("Sim", "Não")
+        aluguel_combo.current(0)
+        aluguel_combo.grid(row=3, column=1, padx=5, pady=5)
+
+        # Botão salvar
+        salvar_btn = ttk.Button(form_frame, text="Salvar Cadastro", command=self.salvar)
+        salvar_btn.grid(row=4, column=0, columnspan=4, pady=15)
+
+        # --- Treeview ---
+        columns = ("nome", "cpf", "qtde", "bloco", "apto", "animais", "aluguel")
+        self.tree = ttk.Treeview(root, columns=columns, show="headings", height=12)
+
+        for col, text in zip(columns, ["Nome", "CPF", "Moradores", "Bloco", "Apartamento", "Animais", "Aluguel em dia"]):
+            self.tree.heading(col, text=text)
+            self.tree.column(col, width=100, anchor=tk.CENTER)
+
+        self.tree.column("nome", width=150, anchor=tk.W)
+        self.tree.column("cpf", width=100, anchor=tk.CENTER)
+        self.tree.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+        # --- Botões Editar e Excluir ---
+        btn_frame = ttk.Frame(root)
+        btn_frame.pack(pady=5)
+
+        ttk.Button(btn_frame, text="Editar Registro", command=self.editar).grid(row=0, column=0, padx=5)
+        ttk.Button(btn_frame, text="Excluir Registro", command=self.excluir).grid(row=0, column=1, padx=5)
+
+    def salvar(self):
+        nome = self.nome_var.get().strip()
+        cpf = self.cpf_var.get().strip()
+        qtde = self.qtde_var.get()
+        bloco = self.bloco_var.get()
+        apto = self.apto_var.get().strip()
+        animais = self.animais_var.get()
+        aluguel = self.aluguel_var.get()
+
+        if not nome or not cpf or not apto:
+            messagebox.showwarning("Erro", "Preencha todos os campos obrigatórios!")
+            return
+
+        self.tree.insert("", tk.END, values=(nome, cpf, qtde, bloco, apto, animais, aluguel))
+
+        self.limpar_campos()
+        messagebox.showinfo("Sucesso", "Cadastro realizado com sucesso!")
+
+    def excluir(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Erro", "Selecione um registro para excluir.")
+            return
+        self.tree.delete(selected)
+        messagebox.showinfo("Excluído", "Registro excluído com sucesso.")
+
+    def editar(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Erro", "Selecione um registro para editar.")
+            return
+
+        valores = self.tree.item(selected, "values")
+        self.nome_var.set(valores[0])
+        self.cpf_var.set(valores[1])
+        self.qtde_var.set(valores[2])
+        self.bloco_var.set(valores[3])
+        self.apto_var.set(valores[4])
+        self.animais_var.set(valores[5])
+        self.aluguel_var.set(valores[6])
+
+        self.tree.delete(selected)
+
+    def limpar_campos(self):
+        self.nome_var.set("")
+        self.cpf_var.set("")
+        self.qtde_var.set(1)
+        self.bloco_var.set("A")
+        self.apto_var.set("")
+        self.animais_var.set("Não")
+        self.aluguel_var.set("Sim")
+
+def tela_login():
+    login_win = tk.Tk()
+    login_win.title("Login")
+    login_win.geometry("480x400")
+
+    usuario_var = tk.StringVar()
+    senha_var = tk.StringVar()
+
+    tk.Label(login_win, text="Usuário:").pack(pady=5)
+    tk.Entry(login_win, textvariable=usuario_var).pack()
+
+    tk.Label(login_win, text="Senha:").pack(pady=5)
+    tk.Entry(login_win, textvariable=senha_var, show="*").pack()
+
+    def checar_login():
+        usuario = usuario_var.get()
+        senha = senha_var.get()
+        if usuario == "admin" and senha == "1234":
+            messagebox.showinfo("Login", "Login efetuado com sucesso!")
+            login_win.destroy()
+            tela_cadastro()
+        else:
+            messagebox.showerror("Erro", "Usuário ou senha incorretos!")
+
+    tk.Button(login_win, text="Entrar", command=checar_login).pack(pady=10)
+
+    login_win.mainloop()
+
+def tela_cadastro():
+    cadastro_win = tk.Tk()
+    app = CadastroCondominos(cadastro_win)
+    cadastro_win.mainloop()
+
+if __name__ =="__main__":
+    tela_login()
