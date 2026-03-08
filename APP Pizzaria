@@ -1,0 +1,2086 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
+import json
+import os
+import re
+import pandas as pd
+from datetime import datetime, timedelta
+from functools import lru_cache
+import webbrowser
+import urllib.parse
+import sys
+import tempfile
+
+# =========================
+# CONFIGURAÇÕES INICIAIS COM PERMISSÃO
+# =========================
+
+def get_base_path():
+    """Retorna o caminho base correto (para executável ou script)"""
+    if getattr(sys, 'frozen', False):
+        # Se for executável
+        return os.path.dirname(sys.executable)
+    else:
+        # Se for script
+        return os.path.dirname(os.path.abspath(__file__))
+
+def get_writable_path():
+    """Retorna um caminho onde temos permissão de escrita"""
+    try:
+        base_path = get_base_path()
+        # Tenta criar um arquivo de teste
+        test_file = os.path.join(base_path, 'test_permission.tmp')
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+        # Se conseguiu, usa o diretório base
+        return base_path
+    except (PermissionError, OSError):
+        # Se não tem permissão, usa AppData
+        appdata = os.environ.get('APPDATA', os.path.expanduser('~'))
+        app_dir = os.path.join(appdata, 'PizzariaSystem')
+        os.makedirs(app_dir, exist_ok=True)
+        return app_dir
+
+# Configurar caminhos com permissão
+BASE_DIR = get_writable_path()
+ARQUIVO = os.path.join(BASE_DIR, "dados.json")
+BACKUP_DIR = os.path.join(BASE_DIR, "backups")
+EXPORT_DIR = os.path.join(BASE_DIR, "exports")
+
+# Criar pastas necessárias com tratamento de erro
+def criar_pastas_seguro():
+    """Cria pastas necessárias com tratamento de erro"""
+    global BACKUP_DIR, EXPORT_DIR
+    
+    backup_dir_original = BACKUP_DIR
+    export_dir_original = EXPORT_DIR
+    
+    pastas_criadas = []
+    
+    # Tentar criar pasta de backups
+    try:
+        os.makedirs(backup_dir_original, exist_ok=True)
+        # Testa se pode escrever na pasta
+        test_file = os.path.join(backup_dir_original, 'test.tmp')
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+        pastas_criadas.append(backup_dir_original)
+        print(f"✅ Pasta backups criada: {backup_dir_original}")
+    except Exception as e:
+        print(f"⚠️ Erro ao criar pasta backups: {e}")
+        # Usa pasta temporária como fallback
+        temp_dir = os.path.join(tempfile.gettempdir(), 'PizzariaSystem')
+        backup_dir_temp = os.path.join(temp_dir, 'backups')
+        os.makedirs(backup_dir_temp, exist_ok=True)
+        
+        # Atualizar a variável global
+        BACKUP_DIR = backup_dir_temp
+        print(f"📁 Usando pasta backups alternativa: {BACKUP_DIR}")
+        pastas_criadas.append(BACKUP_DIR)
+    
+    # Tentar criar pasta de exports
+    try:
+        os.makedirs(export_dir_original, exist_ok=True)
+        # Testa se pode escrever na pasta
+        test_file = os.path.join(export_dir_original, 'test.tmp')
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+        pastas_criadas.append(export_dir_original)
+        print(f"✅ Pasta exports criada: {export_dir_original}")
+    except Exception as e:
+        print(f"⚠️ Erro ao criar pasta exports: {e}")
+        # Usa pasta temporária como fallback
+        temp_dir = os.path.join(tempfile.gettempdir(), 'PizzariaSystem')
+        export_dir_temp = os.path.join(temp_dir, 'exports')
+        os.makedirs(export_dir_temp, exist_ok=True)
+        
+        # Atualizar a variável global
+        EXPORT_DIR = export_dir_temp
+        print(f"📁 Usando pasta exports alternativa: {EXPORT_DIR}")
+        pastas_criadas.append(EXPORT_DIR)
+    
+    return pastas_criadas
+
+# Executar criação de pastas
+pastas = criar_pastas_seguro()
+
+print(f"📂 Diretório base: {BASE_DIR}")
+print(f"📂 Arquivo dados: {ARQUIVO}")
+print(f"📂 Backups: {BACKUP_DIR}")
+print(f"📂 Exports: {EXPORT_DIR}")
+
+# =========================
+# VALIDAÇÕES
+# =========================
+
+def validar_telefone(telefone):
+    """Valida telefone no formato (XX) XXXXX-XXXX ou XXXXXXXXXX"""
+    numeros = re.sub(r'[^0-9]', '', telefone)
+    if len(numeros) not in [10, 11]:
+        return False, "Telefone deve ter 10 ou 11 dígitos"
+    return True, numeros
+
+def validar_valor(valor):
+    """Valida valor monetário"""
+    try:
+        valor_float = float(str(valor).replace(',', '.'))
+        if valor_float <= 0:
+            return False, "Valor deve ser maior que zero"
+        if valor_float > 10000:
+            return False, "Valor muito alto (máx R$ 10.000)"
+        return True, valor_float
+    except:
+        return False, "Valor inválido"
+
+def validar_data(data):
+    """Valida data no formato DD/MM/AAAA"""
+    try:
+        dia, mes, ano = map(int, data.split('/'))
+        datetime(ano, mes, dia)
+        return True, data
+    except:
+        return False, "Data inválida (use DD/MM/AAAA)"
+
+# =========================
+# FUNÇÕES AUXILIARES
+# =========================
+
+def formatar_telefone(telefone):
+    """Formata telefone para exibição"""
+    numeros = re.sub(r'[^0-9]', '', str(telefone))
+    if len(numeros) == 11:
+        return f"({numeros[:2]}) {numeros[2:7]}-{numeros[7:]}"
+    elif len(numeros) == 10:
+        return f"({numeros[:2]}) {numeros[2:6]}-{numeros[6:]}"
+    return telefone
+
+def formatar_valor(valor):
+    """Formata valor para exibição"""
+    return f"R$ {valor:.2f}".replace('.', ',')
+
+def exportar_para_excel(dados, nome_arquivo):
+    """Exporta dados para Excel"""
+    try:
+        df = pd.DataFrame(dados)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        caminho = os.path.join(EXPORT_DIR, f"{nome_arquivo}_{timestamp}.xlsx")
+        df.to_excel(caminho, index=False)
+        return True, caminho
+    except Exception as e:
+        return False, str(e)
+
+def enviar_whatsapp(telefone, mensagem):
+    """Abre WhatsApp Web com mensagem pré-preenchida e envia automaticamente"""
+    try:
+        # Remove caracteres não numéricos do telefone
+        numeros = re.sub(r'[^0-9]', '', str(telefone))
+        
+        # Adiciona código do país se necessário
+        if len(numeros) == 10 or len(numeros) == 11:
+            numeros = "55" + numeros
+        
+        # Codifica a mensagem para URL
+        mensagem_codificada = urllib.parse.quote(mensagem)
+        
+        # Cria URL do WhatsApp
+        url = f"https://wa.me/{numeros}?text={mensagem_codificada}"
+        
+        # Abre no navegador
+        webbrowser.open(url)
+        return True, "WhatsApp aberto com sucesso!"
+    except Exception as e:
+        return False, str(e)
+
+# =========================
+# GERENCIADOR DE BANCO DE DADOS
+# =========================
+
+class Database:
+    def __init__(self, arquivo=ARQUIVO):
+        self.arquivo = arquivo
+        self.backup_dir = BACKUP_DIR
+        self.export_dir = EXPORT_DIR
+        
+    def carregar(self):
+        """Carrega dados do JSON com estrutura completa"""
+        if not os.path.exists(self.arquivo):
+            return self.criar_estrutura_inicial()
+        
+        try:
+            with open(self.arquivo, "r", encoding="utf8") as f:
+                dados = json.load(f)
+            
+            estrutura = self.criar_estrutura_inicial()
+            for chave in estrutura:
+                if chave not in dados:
+                    dados[chave] = estrutura[chave]
+            
+            return dados
+            
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao carregar dados: {e}\n\nArquivo: {self.arquivo}")
+            return self.criar_estrutura_inicial()
+    
+    def criar_estrutura_inicial(self):
+        """Cria estrutura inicial dos dados"""
+        return {
+            "sabores": [],
+            "bebidas": [],
+            "clientes": [],
+            "vendas": [],
+            "configuracoes": {
+                "ultimo_backup": None,
+                "tema": "dark",
+                "diretorio_base": BASE_DIR
+            }
+        }
+    
+    def salvar(self, dados):
+        """Salva dados no JSON"""
+        try:
+            # Garante que o diretório existe
+            os.makedirs(os.path.dirname(self.arquivo), exist_ok=True)
+            
+            with open(self.arquivo, "w", encoding="utf8") as f:
+                json.dump(dados, f, indent=4, ensure_ascii=False)
+            return True
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao salvar: {e}\n\nArquivo: {self.arquivo}")
+            return False
+    
+    def salvar_com_backup(self, dados):
+        """Salva com backup automático"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        try:
+            # Garante que o diretório de backup existe
+            os.makedirs(self.backup_dir, exist_ok=True)
+            
+            backup_file = os.path.join(self.backup_dir, f"dados_{timestamp}.json")
+            
+            with open(backup_file, 'w', encoding='utf8') as f:
+                json.dump(dados, f, indent=4, ensure_ascii=False)
+            
+            self.salvar(dados)
+            self.limpar_backups_antigos(10)
+            
+            dados["configuracoes"]["ultimo_backup"] = timestamp
+            return True
+            
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro no backup: {e}")
+            return False
+    
+    def limpar_backups_antigos(self, manter=10):
+        """Mantém apenas os X backups mais recentes"""
+        try:
+            backups = sorted([f for f in os.listdir(self.backup_dir) 
+                             if f.startswith("dados_") and f.endswith(".json")])
+            
+            while len(backups) > manter:
+                os.remove(os.path.join(self.backup_dir, backups.pop(0)))
+        except:
+            pass  # Ignora erros na limpeza de backups
+
+# =========================
+# ESTILOS
+# =========================
+
+def aplicar_estilo():
+    style = ttk.Style()
+    style.theme_use("clam")
+    bg_dark = "#2e2e2e"
+    bg_medium = "#3a3a3a"
+    button_bg = "#1f3c5a"
+    button_active = "#16324a"
+    fg_white = "white"
+    whatsapp_bg = "#25D366"
+    whatsapp_active = "#128C7E"
+    cancel_bg = "#dc3545"
+    cancel_active = "#c82333"
+
+    style.configure("TFrame", background=bg_dark)
+    style.configure("TLabel", background=bg_dark, foreground=fg_white, font=("Segoe UI", 11))
+
+    style.configure("TButton", background=button_bg, foreground=fg_white, padding=8, font=("Segoe UI", 9, "bold"))
+    style.map("TButton", background=[("active", button_active)])
+    
+    style.configure("WhatsApp.TButton", background=whatsapp_bg, foreground=fg_white, padding=8, font=("Segoe UI", 9, "bold"))
+    style.map("WhatsApp.TButton", background=[("active", whatsapp_active)])
+    
+    style.configure("Cancel.TButton", background=cancel_bg, foreground=fg_white, padding=8, font=("Segoe UI", 9, "bold"))
+    style.map("Cancel.TButton", background=[("active", cancel_active)])
+    
+    style.configure("Treeview", background=bg_medium, foreground=fg_white, 
+                   fieldbackground=bg_medium, rowheight=60, font=("Segoe UI", 10))
+    style.configure("Treeview.Heading", background=button_bg, foreground=fg_white, 
+                   font=("Segoe UI", 10, "bold"))
+    
+    style.configure("TNotebook", background=bg_dark)
+    style.configure("TNotebook.Tab", background=button_bg, foreground=fg_white, padding=[12, 6])
+    
+    style.configure("TCheckbutton", background=bg_dark, foreground=fg_white)
+
+# =========================
+# CLASSE PRINCIPAL DO APP
+# =========================
+
+class PizzariaApp:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Sistema Trindade Pizzaria")
+        self.root.geometry("1400x750")
+        self.root.configure(bg="#2b2b2b")
+        
+        # Mostrar informações de diretório no tittle
+        self.root.title(f"Sistema Trindade Pizzaria - ")
+        
+        self.db = Database()
+        self.dados = self.db.carregar()
+        
+        aplicar_estilo()
+        self.setup_ui()
+        self.configurar_atalhos()
+        self.atualizar_todas_abas()
+        
+        # Fazer backup automático ao iniciar
+        self.root.after(5000, self.fazer_backup_automatico)
+        
+    def setup_ui(self):
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True)
+        
+        self.aba_pedidos = AbaPedidos(self.notebook, self)
+        self.notebook.add(self.aba_pedidos, text="📝 Pedidos")
+        
+        self.aba_clientes = AbaClientes(self.notebook, self)
+        self.notebook.add(self.aba_clientes, text="👥 Clientes")
+        
+        self.aba_sabores = AbaSabores(self.notebook, self)
+        self.notebook.add(self.aba_sabores, text="🍕 Sabores")
+        
+        self.aba_bebidas = AbaBebidas(self.notebook, self)
+        self.notebook.add(self.aba_bebidas, text="🥤 Bebidas")
+        
+        self.aba_vendas = AbaVendas(self.notebook, self)
+        self.notebook.add(self.aba_vendas, text="💰 Vendas")
+        
+        self.aba_relatorios = AbaRelatorios(self.notebook, self)
+        self.notebook.add(self.aba_relatorios, text="📊 Relatórios")
+        
+        self.status_frame = ttk.Frame(self.root)
+        self.status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        self.status_label = ttk.Label(self.status_frame, text="✅ Pronto", relief=tk.SUNKEN)
+        self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        self.backup_label = ttk.Label(self.status_frame, text="", relief=tk.SUNKEN)
+        self.backup_label.pack(side=tk.RIGHT)
+        
+        # Informações do diretório
+        self.dir_label = ttk.Label(self.status_frame, text=f"📁 {BASE_DIR}", relief=tk.SUNKEN)
+        self.dir_label.pack(side=tk.RIGHT, padx=10)
+        
+        self.atualizar_status_backup()
+        
+    def configurar_atalhos(self):
+        self.root.bind('<Control-n>', lambda e: self.aba_pedidos.novo_pedido())
+        self.root.bind('<Control-s>', lambda e: self.fazer_backup())
+        self.root.bind('<Control-f>', lambda e: self.aba_clientes.buscar())
+        self.root.bind('<F1>', lambda e: self.mostrar_ajuda())
+        
+    def fazer_backup(self):
+        if self.db.salvar_com_backup(self.dados):
+            messagebox.showinfo("Sucesso", f"Backup realizado com sucesso!\nPasta: {BACKUP_DIR}")
+            self.atualizar_status_backup()
+        else:
+            messagebox.showerror("Erro", "Falha ao fazer backup")
+    
+    def fazer_backup_automatico(self):
+        """Faz backup automático ao iniciar"""
+        try:
+            self.db.salvar_com_backup(self.dados)
+            self.atualizar_status_backup()
+        except:
+            pass
+    
+    def atualizar_status_backup(self):
+        ultimo = self.dados["configuracoes"].get("ultimo_backup")
+        if ultimo:
+            self.backup_label.config(text=f"📦 Último backup: {ultimo}")
+    
+    def atualizar_todas_abas(self):
+        if hasattr(self, 'aba_sabores'):
+            self.aba_sabores.atualizar()
+        if hasattr(self, 'aba_bebidas'):
+            self.aba_bebidas.atualizar()
+        if hasattr(self, 'aba_clientes'):
+            self.aba_clientes.atualizar()
+        if hasattr(self, 'aba_vendas'):
+            self.aba_vendas.atualizar()
+        if hasattr(self, 'aba_pedidos'):
+            self.aba_pedidos.atualizar_status_tree()
+    
+    @lru_cache(maxsize=128)
+    def preco_sabor(self, nome):
+        for s in self.dados["sabores"]:
+            if s["nome"] == nome:
+                return s["preco"]
+        return 0
+    
+    def preco_bebida(self, nome):
+        for b in self.dados["bebidas"]:
+            if b["nome"] == nome:
+                return b["preco"]
+        return 0
+    
+    def mostrar_ajuda(self):
+        ajuda = f"""
+        📋 ATALHOS DISPONÍVEIS:
+        
+        Ctrl+N - Novo Pedido
+        Ctrl+S - Fazer Backup
+        Ctrl+F - Buscar Cliente
+        F1 - Esta ajuda
+        
+        📁 LOCAL DOS ARQUIVOS:
+        {BASE_DIR}
+        
+        📱 FUNCIONALIDADES DE STATUS:
+        
+        • Acompanhe o status dos pedidos em tempo real
+        • Envie atualizações automáticas via WhatsApp
+        • Status disponíveis: Pendente, Em Preparo, Saiu para Entrega, Entregue, Cancelado
+        """
+        messagebox.showinfo("Ajuda", ajuda)
+    
+    def run(self):
+        self.root.mainloop()
+
+# =========================
+# ABA PEDIDOS (COM STATUS INTEGRADO E BOTÕES - VERSÃO CORRIGIDA)
+# =========================
+
+class AbaPedidos(ttk.Frame):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.dados = app.dados
+        self.setup_ui()
+        
+    def setup_ui(self):
+        # ===== FRAME SUPERIOR COM 3 COLUNAS LADO A LADO =====
+        
+        # Coluna 1: Dados do Cliente
+        frame_cliente = ttk.LabelFrame(self, text="📋 Dados do Cliente", padding=10)
+        frame_cliente.place(x=10, y=10, width=360, height=280)
+        
+        # Linha 0: Cliente
+        ttk.Label(frame_cliente, text="Cliente:").grid(row=0, column=0, sticky="w", pady=3)
+        self.entry_cliente = ttk.Entry(frame_cliente, width=28)
+        self.entry_cliente.grid(row=0, column=1, pady=3, padx=5)
+        
+        # Linha 1: Telefone
+        ttk.Label(frame_cliente, text="Telefone:").grid(row=1, column=0, sticky="w", pady=3)
+        self.entry_telefone = ttk.Entry(frame_cliente, width=28)
+        self.entry_telefone.grid(row=1, column=1, pady=3, padx=5)
+        self.entry_telefone.bind('<KeyRelease>', self.buscar_cliente_telefone)
+        
+        # Linha 2: Endereço
+        ttk.Label(frame_cliente, text="Endereço:").grid(row=2, column=0, sticky="w", pady=3)
+        self.entry_endereco = ttk.Entry(frame_cliente, width=28)
+        self.entry_endereco.grid(row=2, column=1, pady=3, padx=5)
+        
+        # Linha 3: Ponto de Referência
+        ttk.Label(frame_cliente, text="Ponto Ref.:").grid(row=3, column=0, sticky="w", pady=3)
+        self.entry_ref = ttk.Entry(frame_cliente, width=28)
+        self.entry_ref.grid(row=3, column=1, pady=3, padx=5)
+        
+        # Linha 4: Taxa de Entrega
+        ttk.Label(frame_cliente, text="Taxa Entrega R$: ").grid(row=4, column=0, sticky="w", pady=3)
+        self.entry_taxa = ttk.Entry(frame_cliente, width=28)
+        self.entry_taxa.grid(row=4, column=1, pady=3, padx=5)
+        self.entry_taxa.insert(0, "")
+        self.entry_taxa.bind('<KeyRelease>', self.atualizar_total)
+        
+        # Linha 5: Pagamento
+        ttk.Label(frame_cliente, text="Pagamento:").grid(row=5, column=0, sticky="w", pady=3)
+        self.combo_pag = ttk.Combobox(frame_cliente, values=["Dinheiro", "Pix", "Cartão", "Vale"], width=26)
+        self.combo_pag.grid(row=5, column=1, pady=3, padx=5)
+        
+        # Linha 6: Precisa de Troco?
+        frame_troco = ttk.Frame(frame_cliente)
+        frame_troco.grid(row=6, column=0, columnspan=2, pady=5, sticky="w")
+        
+        self.troco_var = tk.BooleanVar()
+        self.chk_troco = ttk.Checkbutton(frame_troco, text="Precisa de troco?", 
+                                         variable=self.troco_var, command=self.toggle_troco)
+        self.chk_troco.pack(side=tk.LEFT, padx=5)
+        
+        self.entry_troco = ttk.Entry(frame_troco, width=15, state="disabled")
+        self.entry_troco.pack(side=tk.LEFT, padx=5)
+        self.entry_troco.insert(0, "0")
+        
+        # Coluna 2: Pizzas do Pedido
+        frame_pizzas = ttk.LabelFrame(self, text="🍕 Pizzas do Pedido", padding=10)
+        frame_pizzas.place(x=620, y=10, width=360, height=340)
+        
+        # Frame interno para treeview com scroll
+        frame_pizza_tree = ttk.Frame(frame_pizzas)
+        frame_pizza_tree.grid(row=0, column=0, columnspan=4, pady=5, sticky="nsew")
+        frame_pizza_tree.grid_rowconfigure(0, weight=1)
+        frame_pizza_tree.grid_columnconfigure(0, weight=1)
+        
+        # Scrollbars
+        pizza_vsb = ttk.Scrollbar(frame_pizza_tree, orient="vertical")
+        pizza_hsb = ttk.Scrollbar(frame_pizza_tree, orient="horizontal")
+        
+        self.tree_pizzas = ttk.Treeview(frame_pizza_tree, 
+                                        columns=("Sabor1", "Sabor2", "Qtd", "Subtotal"), 
+                                        show="headings",
+                                        yscrollcommand=pizza_vsb.set,
+                                        xscrollcommand=pizza_hsb.set,
+                                        height=4)
+        
+        pizza_vsb.config(command=self.tree_pizzas.yview)
+        pizza_hsb.config(command=self.tree_pizzas.xview)
+        
+        self.tree_pizzas.heading("Sabor1", text="Sabor 1")
+        self.tree_pizzas.heading("Sabor2", text="Sabor 2")
+        self.tree_pizzas.heading("Qtd", text="Qtd")
+        self.tree_pizzas.heading("Subtotal", text="Subtotal")
+        
+        self.tree_pizzas.column("Sabor1", width=90, minwidth=80)
+        self.tree_pizzas.column("Sabor2", width=90, minwidth=80)
+        self.tree_pizzas.column("Qtd", width=40, minwidth=40)
+        self.tree_pizzas.column("Subtotal", width=90, minwidth=80)
+        
+        # Grid layout
+        self.tree_pizzas.grid(row=0, column=0, sticky="nsew")
+        pizza_vsb.grid(row=0, column=1, sticky="ns")
+        pizza_hsb.grid(row=1, column=0, sticky="ew")
+        
+        # Campos nova pizza
+        ttk.Label(frame_pizzas, text="Sabor 1:").grid(row=2, column=0, pady=5, sticky="w")
+        self.combo_sabor1 = ttk.Combobox(frame_pizzas, width=12)
+        self.combo_sabor1.grid(row=2, column=1, pady=5, padx=2)
+        
+        ttk.Label(frame_pizzas, text="Sabor 2:").grid(row=2, column=2, pady=5, sticky="w")
+        self.combo_sabor2 = ttk.Combobox(frame_pizzas, width=12)
+        self.combo_sabor2.grid(row=2, column=3, pady=5, padx=2)
+        
+        ttk.Label(frame_pizzas, text="Qtd:").grid(row=3, column=0, pady=5, sticky="w")
+        self.entry_qtd_pizza = ttk.Entry(frame_pizzas, width=8)
+        self.entry_qtd_pizza.grid(row=3, column=1, pady=5, sticky="w")
+        self.entry_qtd_pizza.insert(0, "1")
+        
+        ttk.Button(frame_pizzas, text="➕ Adicionar Pizza", 
+                  command=self.adicionar_pizza).grid(row=4, column=0, columnspan=2, pady=5)
+        
+        ttk.Button(frame_pizzas, text="➖ Remover Pizza", 
+                  command=lambda: self.remover_item(self.tree_pizzas)).grid(row=4, column=2, columnspan=2, pady=5)
+        
+        # Configurar peso das linhas
+        frame_pizzas.grid_rowconfigure(0, weight=1)
+        
+        # Coluna 3: Bebidas do Pedido
+        frame_bebidas = ttk.LabelFrame(self, text="🥤 Bebidas do Pedido", padding=10)
+        frame_bebidas.place(x=1000, y=10, width=360, height=340)
+        
+        # Frame interno para treeview com scroll
+        frame_bebida_tree = ttk.Frame(frame_bebidas)
+        frame_bebida_tree.grid(row=0, column=0, columnspan=3, pady=5, sticky="nsew")
+        frame_bebida_tree.grid_rowconfigure(0, weight=1)
+        frame_bebida_tree.grid_columnconfigure(0, weight=1)
+        
+        # Scrollbars
+        bebida_vsb = ttk.Scrollbar(frame_bebida_tree, orient="vertical")
+        bebida_hsb = ttk.Scrollbar(frame_bebida_tree, orient="horizontal")
+        
+        self.tree_bebidas = ttk.Treeview(frame_bebida_tree, 
+                                         columns=("Bebida", "Qtd", "Subtotal"), 
+                                         show="headings",
+                                         yscrollcommand=bebida_vsb.set,
+                                         xscrollcommand=bebida_hsb.set,
+                                         height=4)
+        
+        bebida_vsb.config(command=self.tree_bebidas.yview)
+        bebida_hsb.config(command=self.tree_bebidas.xview)
+        
+        self.tree_bebidas.heading("Bebida", text="Bebida")
+        self.tree_bebidas.heading("Qtd", text="Qtd")
+        self.tree_bebidas.heading("Subtotal", text="Subtotal")
+        
+        self.tree_bebidas.column("Bebida", width=150, minwidth=120)
+        self.tree_bebidas.column("Qtd", width=50, minwidth=50)
+        self.tree_bebidas.column("Subtotal", width=100, minwidth=80)
+        
+        # Grid layout
+        self.tree_bebidas.grid(row=0, column=0, sticky="nsew")
+        bebida_vsb.grid(row=0, column=1, sticky="ns")
+        bebida_hsb.grid(row=1, column=0, sticky="ew")
+        
+        # Campos nova bebida
+        ttk.Label(frame_bebidas, text="Bebida:").grid(row=2, column=0, pady=3, sticky="w")
+        self.combo_bebida = ttk.Combobox(frame_bebidas, width=15)
+        self.combo_bebida.grid(row=2, column=1, columnspan=1, pady=3, padx=2, sticky="w")
+        
+        ttk.Label(frame_bebidas, text="Qtd:").grid(row=3, column=0, pady=5, sticky="w")
+        self.entry_qtd_bebida = ttk.Entry(frame_bebidas, width=8)
+        self.entry_qtd_bebida.grid(row=3, column=1, pady=5, sticky="w")
+        self.entry_qtd_bebida.insert(0, "1")
+        
+        ttk.Button(frame_bebidas, text="➕ Adicionar Bebida", 
+                  command=self.adicionar_bebida).grid(row=4, column=0, columnspan=1, pady=3)
+        
+        ttk.Button(frame_bebidas, text="➖ Remover Bebida", 
+                  command=lambda: self.remover_item(self.tree_bebidas)).grid(row=4, column=1, columnspan=2, pady=5)
+        
+        # Configurar peso das linhas
+        frame_bebidas.grid_rowconfigure(0, weight=1)
+        
+        # ===== LINHA DO TOTAL =====
+        self.label_total = ttk.Label(self, text="\nTotal: R$ 0,00\n" , font=("Segoe UI", 14, "bold"))
+        self.label_total.place(x=30, y=300)
+        
+        # ===== BOTÕES DE AÇÃO =====
+        frame_botoes_acao = ttk.Frame(self)
+        frame_botoes_acao.place(x=400, y=50)
+        
+        ttk.Button(frame_botoes_acao, text="✅ Finalizar Pedido",width=20, 
+                  command=self.finalizar_pedido).pack(pady=5)
+        ttk.Button(frame_botoes_acao, text="🔄 Novo Pedido",width=20, 
+                  command=self.novo_pedido).pack(pady=5)
+        
+        # ===== TREEVIEW DE STATUS (ABAIXO) =====
+        frame_status = ttk.LabelFrame(self, text="📊 Status dos Pedidos", padding=10)
+        frame_status.place(x=10, y=360, width=1360, height=360)
+        
+        # Frame para filtros de status e botões
+        frame_filtros_status = ttk.Frame(frame_status)
+        frame_filtros_status.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(frame_filtros_status, text="Filtrar por Status:").pack(side=tk.LEFT, padx=5)
+        self.combo_status_filtro = ttk.Combobox(frame_filtros_status, 
+                                               values=["Todos", "Pendente", "Em Preparo", "Saiu para Entrega", "Entregue", "Cancelado"], 
+                                               width=15)
+        self.combo_status_filtro.pack(side=tk.LEFT, padx=5)
+        self.combo_status_filtro.set("Todos")
+        
+        ttk.Label(frame_filtros_status, text="Cliente:").pack(side=tk.LEFT, padx=5)
+        self.entry_cliente_filtro = ttk.Entry(frame_filtros_status, width=20)
+        self.entry_cliente_filtro.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(frame_filtros_status, text="🔍 Filtrar", command=self.filtrar_status).pack(side=tk.LEFT, padx=2)
+        ttk.Button(frame_filtros_status, text="🔄 Atualizar", command=self.atualizar_status_tree).pack(side=tk.LEFT, padx=2)
+        
+        # Botões de ação de status - CORRIGIDOS com lambda s="valor"
+        ttk.Button(frame_filtros_status, text="⏳ Pendente", 
+                  command=lambda s="Pendente": self.atualizar_status_pedido(s)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(frame_filtros_status, text="👨‍🍳 Em Preparo", 
+                  command=lambda s="Em Preparo": self.atualizar_status_pedido(s)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(frame_filtros_status, text="🛵 Saiu para Entrega", 
+                  command=lambda s="Saiu para Entrega": self.atualizar_status_pedido(s)).pack(side=tk.LEFT, padx=2)
+        ttk.Button(frame_filtros_status, text="✅ Entregue", 
+                  command=lambda s="Entregue": self.atualizar_status_pedido(s)).pack(side=tk.LEFT, padx=2)
+        
+        # Botão WhatsApp
+        ttk.Button(frame_filtros_status, text="📱 WhatsApp", 
+                  style="WhatsApp.TButton",
+                  command=self.enviar_whatsapp_status).pack(side=tk.LEFT, padx=5)
+        
+        # Botão Cancelar Pedido (substituindo o botão Detalhes)
+        ttk.Button(frame_filtros_status, text="❌ Cancelar Pedido", 
+                  style="Cancel.TButton",
+                  command=self.cancelar_pedido).pack(side=tk.LEFT, padx=2)
+        
+        # Frame para treeview com scroll
+        frame_status_tree = ttk.Frame(frame_status)
+        frame_status_tree.pack(fill="both", expand=True, pady=5)
+        frame_status_tree.grid_rowconfigure(0, weight=1)
+        frame_status_tree.grid_columnconfigure(0, weight=1)
+        
+        # Scrollbars
+        status_vsb = ttk.Scrollbar(frame_status_tree, orient="vertical")
+        status_hsb = ttk.Scrollbar(frame_status_tree, orient="horizontal")
+        
+        self.tree_status = ttk.Treeview(frame_status_tree, 
+                                        columns=("ID", "Cliente", "Telefone", "Itens", "Total", "Status", "Data"),
+                                        show="headings",
+                                        yscrollcommand=status_vsb.set,
+                                        xscrollcommand=status_hsb.set,
+                                        height=8)
+        
+        status_vsb.config(command=self.tree_status.yview)
+        status_hsb.config(command=self.tree_status.xview)
+        
+        self.tree_status.heading("ID", text="ID")
+        self.tree_status.heading("Cliente", text="Cliente")
+        self.tree_status.heading("Telefone", text="Telefone")
+        self.tree_status.heading("Itens", text="Itens")
+        self.tree_status.heading("Total", text="Total")
+        self.tree_status.heading("Status", text="Status")
+        self.tree_status.heading("Data", text="Data")
+        
+        # Configurar larguras das colunas
+        self.tree_status.column("ID", width=150, minwidth=150)
+        self.tree_status.column("Cliente", width=150, minwidth=150)
+        self.tree_status.column("Telefone", width=120, minwidth=120)
+        self.tree_status.column("Itens", width=450, minwidth=350)
+        self.tree_status.column("Total", width=100, minwidth=100)
+        self.tree_status.column("Status", width=120, minwidth=120)
+        self.tree_status.column("Data", width=150, minwidth=150)
+        
+        # Grid layout
+        self.tree_status.grid(row=0, column=0, sticky="nsew")
+        status_vsb.grid(row=0, column=1, sticky="ns")
+        status_hsb.grid(row=1, column=0, sticky="ew")
+        
+        self.atualizar_combobox()
+        self.atualizar_status_tree()
+    
+    def get_mensagem_status(self, status, cliente, itens, total):
+        """Retorna mensagem apropriada para cada status"""
+        mensagens = {
+            "Pendente": f"Olá {cliente}! ✅ Seu pedido foi recebido com sucesso e está aguardando preparo.\n\nItens:\n{itens}\n\nTotal: {total}\n\nEm breve iniciaremos o preparo!",
+            
+            "Em Preparo": f"Olá {cliente}! 👨‍🍳 Boas notícias! Seu pedido:\n{itens}\n\nJá está sendo preparado com todo carinho! Em instantes sairá para entrega.",
+            
+            "Saiu para Entrega": f"Olá {cliente}! 🛵 Seu pedido:\n{itens}\n\nAcabou de sair para entrega! Fique atento, em breve chegará.",
+            
+            "Entregue": f"Olá {cliente}! ✅ Seu pedido:\n{itens}\n\nFoi entregue! Obrigado pela preferência! Volte sempre! 🍕",
+            
+            "Cancelado": f"Olá {cliente}! ❌ Seu pedido:\n{itens}\n\nFoi cancelado. Em caso de dúvidas, entre em contato conosco."
+        }
+        
+        return mensagens.get(status, f"Atualização do pedido: {status}")
+    
+    def enviar_whatsapp_status(self):
+        """Envia WhatsApp para o pedido selecionado"""
+        selecao = self.tree_status.selection()
+        if not selecao:
+            messagebox.showwarning("Aviso", "Selecione um pedido")
+            return
+        
+        valores = self.tree_status.item(selecao)['values']
+        pedido_id = valores[0]
+        cliente = valores[1]
+        telefone = valores[2]
+        itens = valores[3]
+        total = valores[4] if len(valores) > 4 else "R$ 0,00"
+        status = valores[5] if len(valores) > 5 else "Pendente"
+        
+        # Buscar pedido completo nos dados
+        pedido = None
+        for v in self.dados["vendas"]:
+            if v.get("id") == pedido_id:
+                pedido = v
+                break
+        
+        if pedido and "itens" in pedido:
+            resumo_itens = "\n".join(pedido["itens"])
+        else:
+            resumo_itens = itens
+        
+        mensagem = self.get_mensagem_status(status, cliente, resumo_itens, total)
+        
+        if telefone:
+            telefone_num = re.sub(r'[^0-9]', '', telefone)
+            if telefone_num:
+                enviar_whatsapp(telefone_num, mensagem)
+                messagebox.showinfo("Sucesso", "WhatsApp aberto com mensagem pronta!")
+            else:
+                messagebox.showwarning("Aviso", "Telefone inválido")
+        else:
+            messagebox.showwarning("Aviso", "Cliente não possui telefone cadastrado")
+    
+    def cancelar_pedido(self):
+        """Cancela o pedido selecionado"""
+        selecao = self.tree_status.selection()
+        if not selecao:
+            messagebox.showwarning("Aviso", "Selecione um pedido")
+            return
+        
+        valores = self.tree_status.item(selecao)['values']
+        pedido_id = valores[0]
+        cliente = valores[1]
+        telefone = valores[2]
+        itens = valores[3]
+        total = valores[4]
+        status_atual = valores[5]
+        
+        # Verificar se o pedido já está entregue ou cancelado
+        if status_atual in ["Entregue", "Cancelado"]:
+            messagebox.showwarning("Aviso", f"Este pedido já está {status_atual.lower()} e não pode ser cancelado.")
+            return
+        
+        # Confirmar cancelamento
+        if not messagebox.askyesno("Confirmar Cancelamento", f"Tem certeza que deseja cancelar o pedido de {cliente}?"):
+            return
+        
+        print(f"Cancelando pedido ID: {pedido_id}")  # DEBUG
+        
+        # Atualizar nos dados
+        pedido_atualizado = None
+        encontrado = False
+        for v in self.dados["vendas"]:
+            print(f"Comparando com venda ID: {v.get('id')}")  # DEBUG
+            if str(v.get("id")) == str(pedido_id):  # Garantir comparação como string
+                v["status"] = "Cancelado"
+                v["status_atualizado_em"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+                pedido_atualizado = v
+                encontrado = True
+                print(f"Pedido encontrado e cancelado!")  # DEBUG
+                break
+        
+        if not encontrado:
+            print(f"ERRO: Pedido com ID {pedido_id} não encontrado!")  # DEBUG
+            messagebox.showerror("Erro", "Pedido não encontrado no banco de dados")
+            return
+        
+        # Salvar no banco de dados
+        self.app.db.salvar(self.dados)
+        print("Dados salvos com sucesso!")  # DEBUG
+        
+        # Atualizar o treeview
+        self.atualizar_status_tree()
+        print("Treeview atualizado!")  # DEBUG
+        
+        # Perguntar se quer enviar WhatsApp
+        if telefone and messagebox.askyesno("Enviar WhatsApp", "Deseja notificar o cliente sobre o cancelamento?"):
+            telefone_num = re.sub(r'[^0-9]', '', telefone)
+            if telefone_num:
+                if pedido_atualizado and "itens" in pedido_atualizado:
+                    resumo_itens = "\n".join(pedido_atualizado["itens"])
+                else:
+                    resumo_itens = itens
+                
+                mensagem = self.get_mensagem_status("Cancelado", cliente, resumo_itens, total)
+                enviar_whatsapp(telefone_num, mensagem)
+                messagebox.showinfo("WhatsApp", "WhatsApp aberto com mensagem pronta!")
+        
+        messagebox.showinfo("Sucesso", "Pedido cancelado com sucesso!")
+    
+    def ver_detalhes_pedido(self):
+        """Mostra detalhes do pedido selecionado"""
+        selecao = self.tree_status.selection()
+        if not selecao:
+            messagebox.showwarning("Aviso", "Selecione um pedido")
+            return
+        
+        valores = self.tree_status.item(selecao)['values']
+        pedido_id = valores[0]
+        
+        # Buscar pedido completo
+        pedido = None
+        for v in self.dados["vendas"]:
+            if v.get("id") == pedido_id:
+                pedido = v
+                break
+        
+        if not pedido:
+            messagebox.showerror("Erro", "Pedido não encontrado")
+            return
+        
+        # Janela de detalhes
+        janela = tk.Toplevel(self)
+        janela.title(f"Detalhes do Pedido - {pedido['cliente']}")
+        janela.geometry("600x500")
+        janela.configure(bg="#2e2e2e")
+        
+        texto = tk.Text(janela, bg="#3a3a3a", fg="white", font=("Courier", 10))
+        texto.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        detalhes = f"""
+{'='*60}
+DETALHES DO PEDIDO
+{'='*60}
+
+📋 INFORMAÇÕES GERAIS:
+ID: {pedido.get('id', 'N/A')}
+Cliente: {pedido['cliente']}
+Telefone: {formatar_telefone(pedido.get('telefone', ''))}
+Endereço: {pedido.get('endereco', 'N/A')}
+Referência: {pedido.get('referencia', 'N/A')}
+Data: {pedido.get('data', 'N/A')}
+Status: {pedido.get('status', 'Pendente')}
+
+🛒 ITENS DO PEDIDO:
+{'-'*40}
+"""
+        
+        # Itens
+        if "itens" in pedido:
+            for item in pedido["itens"]:
+                detalhes += f"• {item}\n"
+        elif "pizzas" in pedido:
+            for pizza in pedido["pizzas"]:
+                detalhes += f"• {pizza}\n"
+        
+        detalhes += f"""
+{'-'*40}
+
+💰 VALORES:
+Subtotal Pizzas: {formatar_valor(pedido.get('total_pizzas', 0))}
+Subtotal Bebidas: {formatar_valor(pedido.get('total_bebidas', 0))}
+Taxa de Entrega: {formatar_valor(pedido.get('taxa_entrega',0 ))}
+{'='*40}
+TOTAL: {formatar_valor(pedido.get('total', 0))}
+{'='*40}
+
+💳 PAGAMENTO:
+Forma: {pedido.get('pagamento', 'N/A')}
+"""
+        
+        if pedido.get('precisa_troco', False):
+            detalhes += f"Troco para: {formatar_valor(pedido.get('troco_para', 0))}\n"
+            if pedido.get('troco_para', 0) > pedido.get('total', 0):
+                troco = pedido['troco_para'] - pedido['total']
+                detalhes += f"Troco a dar: {formatar_valor(troco)}\n"
+        
+        texto.insert(1.0, detalhes)
+        texto.config(state="disabled")
+    
+    def atualizar_status_pedido(self, novo_status):
+        """Atualiza o status do pedido selecionado"""
+        selecao = self.tree_status.selection()
+        if not selecao:
+            messagebox.showwarning("Aviso", "Selecione um pedido")
+            return
+        
+        valores = self.tree_status.item(selecao)['values']
+        pedido_id = valores[0]
+        cliente = valores[1]
+        telefone = valores[2]
+        itens = valores[3]
+        total = valores[4]
+        
+        print(f"Tentando atualizar pedido ID: {pedido_id} para status: {novo_status}")  # DEBUG
+        
+        # Atualizar nos dados
+        pedido_atualizado = None
+        encontrado = False
+        for v in self.dados["vendas"]:
+            print(f"Comparando com venda ID: {v.get('id')}")  # DEBUG
+            if str(v.get("id")) == str(pedido_id):  # Garantir comparação como string
+                v["status"] = novo_status
+                v["status_atualizado_em"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+                pedido_atualizado = v
+                encontrado = True
+                print(f"Pedido encontrado e atualizado! Novo status: {v['status']}")  # DEBUG
+                break
+        
+        if not encontrado:
+            print(f"ERRO: Pedido com ID {pedido_id} não encontrado!")  # DEBUG
+            messagebox.showerror("Erro", "Pedido não encontrado no banco de dados")
+            return
+        
+        # Salvar no banco de dados
+        self.app.db.salvar(self.dados)
+        print("Dados salvos com sucesso!")  # DEBUG
+        
+        # Atualizar o treeview ANTES de perguntar sobre WhatsApp
+        self.atualizar_status_tree()
+        print("Treeview atualizado!")  # DEBUG
+        
+        # Perguntar se quer enviar WhatsApp (DEPOIS de atualizar o treeview)
+        if telefone and messagebox.askyesno("Enviar WhatsApp", f"Deseja notificar o cliente sobre o status '{novo_status}'?"):
+            telefone_num = re.sub(r'[^0-9]', '', telefone)
+            if telefone_num:
+                if pedido_atualizado and "itens" in pedido_atualizado:
+                    resumo_itens = "\n".join(pedido_atualizado["itens"])
+                else:
+                    resumo_itens = itens
+                
+                mensagem = self.get_mensagem_status(novo_status, cliente, resumo_itens, total)
+                enviar_whatsapp(telefone_num, mensagem)
+                messagebox.showinfo("WhatsApp", "WhatsApp aberto com mensagem pronta!")
+        
+        # Garantir que o treeview seja atualizado novamente (redundante mas seguro)
+        self.atualizar_status_tree()
+    
+    def toggle_troco(self):
+        """Habilita/desabilita campo de troco"""
+        if self.troco_var.get():
+            self.entry_troco.config(state="normal")
+        else:
+            self.entry_troco.config(state="disabled")
+            self.entry_troco.delete(0, tk.END)
+            self.entry_troco.insert(0, "0")
+    
+    def buscar_cliente_telefone(self, event=None):
+        telefone = self.entry_telefone.get()
+        if len(telefone) >= 8:
+            for cliente in self.dados["clientes"]:
+                if telefone in cliente["telefone"]:
+                    self.entry_cliente.delete(0, tk.END)
+                    self.entry_cliente.insert(0, cliente["nome"])
+                    self.entry_endereco.delete(0, tk.END)
+                    self.entry_endereco.insert(0, cliente["endereco"])
+                    self.entry_ref.delete(0, tk.END)
+                    self.entry_ref.insert(0, cliente.get("referencia", ""))
+                    break
+    
+    def adicionar_pizza(self):
+        s1 = self.combo_sabor1.get()
+        if not s1:
+            messagebox.showerror("Erro", "Selecione o sabor 1")
+            return
+        
+        try:
+            qtd = int(self.entry_qtd_pizza.get())
+            if qtd <= 0:
+                raise ValueError
+        except:
+            messagebox.showerror("Erro", "Quantidade inválida")
+            return
+        
+        s2 = self.combo_sabor2.get()
+        p1 = self.app.preco_sabor(s1)
+        p2 = self.app.preco_sabor(s2) if s2 else 0
+        preco = max(p1, p2)
+        subtotal = preco * qtd
+        
+        if s2:
+            descricao = f"{qtd}x Pizza 1/2 {s1} / 1/2 {s2}"
+        else:
+            descricao = f"{qtd}x Pizza {s1}"
+        
+        self.tree_pizzas.insert("", "end", values=(s1, s2 if s2 else "-", qtd, formatar_valor(subtotal)), 
+                               tags=(descricao,))
+        
+        self.combo_sabor1.set("")
+        self.combo_sabor2.set("")
+        self.entry_qtd_pizza.delete(0, tk.END)
+        self.entry_qtd_pizza.insert(0, "1")
+        
+        self.atualizar_total()
+    
+    def adicionar_bebida(self):
+        bebida = self.combo_bebida.get()
+        if not bebida:
+            messagebox.showerror("Erro", "Selecione uma bebida")
+            return
+        
+        try:
+            qtd = int(self.entry_qtd_bebida.get())
+            if qtd <= 0:
+                raise ValueError
+        except:
+            messagebox.showerror("Erro", "Quantidade inválida")
+            return
+        
+        preco = self.app.preco_bebida(bebida)
+        subtotal = preco * qtd
+        
+        self.tree_bebidas.insert("", "end", values=(bebida, qtd, formatar_valor(subtotal)),
+                                tags=(f"{qtd}x {bebida}",))
+        
+        self.combo_bebida.set("")
+        self.entry_qtd_bebida.delete(0, tk.END)
+        self.entry_qtd_bebida.insert(0, "1")
+        
+        self.atualizar_total()
+    
+    def remover_item(self, tree):
+        selecao = tree.selection()
+        if selecao:
+            tree.delete(selecao)
+            self.atualizar_total()
+    
+    def atualizar_total(self, event=None):
+        total_pizzas = 0
+        for item in self.tree_pizzas.get_children():
+            valores = self.tree_pizzas.item(item)['values']
+            subtotal = float(valores[3].replace("R$ ", "").replace(',', '.'))
+            total_pizzas += subtotal
+        
+        total_bebidas = 0
+        for item in self.tree_bebidas.get_children():
+            valores = self.tree_bebidas.item(item)['values']
+            subtotal = float(valores[2].replace("R$ ", "").replace(',', '.'))
+            total_bebidas += subtotal
+        
+        try:
+            taxa = float(self.entry_taxa.get().replace(',', '.'))
+        except:
+            taxa = 0
+        
+        total_geral = total_pizzas + total_bebidas + taxa
+        
+        self.label_total.config(text=f"Total: {formatar_valor(total_geral)} (Pizzas: {formatar_valor(total_pizzas)} | Bebidas: {formatar_valor(total_bebidas)} | Taxa: {formatar_valor(taxa)})")
+    
+    def finalizar_pedido(self):
+        cliente = self.entry_cliente.get()
+        telefone = self.entry_telefone.get()
+        endereco = self.entry_endereco.get()
+        
+        if not cliente or not endereco:
+            messagebox.showerror("Erro", "Cliente e endereço são obrigatórios")
+            return
+        
+        if telefone:
+            valido, resultado = validar_telefone(telefone)
+            if not valido:
+                messagebox.showerror("Erro", resultado)
+                return
+            telefone = resultado
+        
+        pizzas_items = self.tree_pizzas.get_children()
+        bebidas_items = self.tree_bebidas.get_children()
+        
+        if not pizzas_items and not bebidas_items:
+            messagebox.showerror("Erro", "Adicione pelo menos um item ao pedido (pizza ou bebida)")
+            return
+        
+        try:
+            taxa = float(self.entry_taxa.get().replace(',', '.'))
+        except:
+            taxa = 0
+        
+        precisa_troco = self.troco_var.get()
+        troco_para = 0
+        if precisa_troco:
+            try:
+                troco_para = float(self.entry_troco.get().replace(',', '.'))
+            except:
+                messagebox.showerror("Erro", "Valor do troco inválido")
+                return
+        
+        # Lista de todos os itens
+        itens_lista = []
+        total_pizzas = 0
+        total_bebidas = 0
+        
+        # Processa pizzas
+        for item in pizzas_items:
+            valores = self.tree_pizzas.item(item)['values']
+            s1, s2, qtd, subtotal_str = valores
+            subtotal = float(subtotal_str.replace("R$ ", "").replace(',', '.'))
+            
+            if s2 != "-":
+                item_desc = f"{qtd}x Pizza 1/2 {s1} / 1/2 {s2}"
+            else:
+                item_desc = f"{qtd}x Pizza {s1}"
+            
+            itens_lista.append(item_desc)
+            total_pizzas += subtotal
+        
+        # Processa bebidas
+        for item in bebidas_items:
+            valores = self.tree_bebidas.item(item)['values']
+            bebida, qtd, subtotal_str = valores
+            subtotal = float(subtotal_str.replace("R$ ", "").replace(',', '.'))
+            
+            item_desc = f"{qtd}x {bebida}"
+            itens_lista.append(item_desc)
+            total_bebidas += subtotal
+        
+        total_geral = total_pizzas + total_bebidas + taxa
+        
+        venda = {
+            "cliente": cliente,
+            "telefone": telefone,
+            "endereco": endereco,
+            "referencia": self.entry_ref.get(),
+            "itens": itens_lista,
+            "pizzas": [self.tree_pizzas.item(item)['tags'][0] for item in pizzas_items],
+            "bebidas": [self.tree_bebidas.item(item)['tags'][0] for item in bebidas_items],
+            "taxa_entrega": taxa,
+            "precisa_troco": precisa_troco,
+            "troco_para": troco_para if precisa_troco else 0,
+            "pagamento": self.combo_pag.get() or "Não informado",
+            "total_pizzas": total_pizzas,
+            "total_bebidas": total_bebidas,
+            "total": total_geral,
+            "data": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "id": str(datetime.now().strftime("%Y%m%d%H%M%S")),
+            "status": "Pendente",
+            "status_atualizado_em": datetime.now().strftime("%d/%m/%Y %H:%M")
+        }
+        
+        self.dados["vendas"].append(venda)
+        self.atualizar_cliente(cliente, telefone, endereco, self.entry_ref.get(), total_geral)
+        self.app.db.salvar(self.dados)
+        
+        # Perguntar se quer enviar WhatsApp
+        if telefone and messagebox.askyesno("Notificar Cliente", "Deseja notificar o cliente sobre o pedido via WhatsApp?"):
+            telefone_num = re.sub(r'[^0-9]', '', telefone)
+            if telefone_num:
+                mensagem = f"Olá {cliente}! ✅ Seu pedido foi recebido com sucesso e está aguardando preparo.\n\nItens:\n" + "\n".join(itens_lista) + f"\n\nTotal: {formatar_valor(total_geral)}\n\nEm breve iniciaremos o preparo!"
+                enviar_whatsapp(telefone_num, mensagem)
+                messagebox.showinfo("WhatsApp", "WhatsApp aberto com mensagem pronta!")
+        
+        messagebox.showinfo("Sucesso", "Pedido finalizado com sucesso!")
+        self.novo_pedido()
+        if hasattr(self.app, 'aba_vendas'):
+            self.app.aba_vendas.atualizar()
+        
+        self.atualizar_status_tree()
+    
+    def atualizar_cliente(self, nome, telefone, endereco, referencia, valor_compra):
+        if not telefone:
+            return
+            
+        for cliente in self.dados["clientes"]:
+            if cliente["telefone"] == telefone:
+                cliente["total_gasto"] = cliente.get("total_gasto", 0) + valor_compra
+                cliente["ultima_compra"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+                return
+        
+        self.dados["clientes"].append({
+            "nome": nome,
+            "telefone": telefone,
+            "endereco": endereco,
+            "referencia": referencia,
+            "total_gasto": valor_compra,
+            "ultima_compra": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "data_cadastro": datetime.now().strftime("%d/%m/%Y")
+        })
+    
+    def novo_pedido(self):
+        self.entry_cliente.delete(0, tk.END)
+        self.entry_telefone.delete(0, tk.END)
+        self.entry_endereco.delete(0, tk.END)
+        self.entry_ref.delete(0, tk.END)
+        self.entry_taxa.delete(0, tk.END)
+        self.entry_taxa.insert(0, "0")
+        self.troco_var.set(False)
+        self.toggle_troco()
+        self.combo_pag.set("")
+        
+        for item in self.tree_pizzas.get_children():
+            self.tree_pizzas.delete(item)
+        
+        for item in self.tree_bebidas.get_children():
+            self.tree_bebidas.delete(item)
+        
+        self.label_total.config(text="Total: R$ 0,00")
+    
+    def atualizar_combobox(self):
+        sabores = [s["nome"] for s in self.dados["sabores"]]
+        self.combo_sabor1["values"] = sabores
+        self.combo_sabor2["values"] = sabores
+        
+        bebidas = [b["nome"] for b in self.dados["bebidas"]]
+        self.combo_bebida["values"] = bebidas
+    
+    def filtrar_status(self):
+        """Filtra os pedidos no treeview de status"""
+        status_filtro = self.combo_status_filtro.get()
+        cliente_filtro = self.entry_cliente_filtro.get().lower()
+        
+        self.tree_status.delete(*self.tree_status.get_children())
+        
+        for v in self.dados["vendas"]:
+            # Aplicar filtros
+            if status_filtro != "Todos" and v.get("status", "Pendente") != status_filtro:
+                continue
+            
+            if cliente_filtro and cliente_filtro not in v["cliente"].lower():
+                continue
+            
+            # Formatar itens para exibição
+            if "itens" in v:
+                itens_str = "\n".join(v["itens"][:3])
+                if len(v["itens"]) > 3:
+                    itens_str += f"\n... +{len(v['itens'])-3} itens"
+            elif "pizzas" in v:
+                itens_str = "\n".join(v["pizzas"][:3])
+                if len(v["pizzas"]) > 3:
+                    itens_str += f"\n... +{len(v['pizzas'])-3} pizzas"
+            else:
+                itens_str = "Item não especificado"
+            
+            # Garantir que o status seja mostrado corretamente
+            status_atual = v.get("status", "Pendente")
+            print(f"Inserindo pedido {v.get('id')} com status: {status_atual}")  # DEBUG
+            
+            self.tree_status.insert("", "end", values=(
+                v.get("id", ""),
+                v["cliente"],
+                formatar_telefone(v.get("telefone", "")),
+                itens_str,
+                formatar_valor(v["total"]),
+                status_atual,  # Usar a variável local
+                v["data"]
+            ))
+    
+    def atualizar_status_tree(self):
+        """Atualiza o treeview de status"""
+        self.filtrar_status()
+
+# =========================
+# ABA CLIENTES
+# =========================
+
+class AbaClientes(ttk.Frame):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.dados = app.dados
+        self.setup_ui()
+        
+    def setup_ui(self):
+        frame_busca = ttk.LabelFrame(self, text="Buscar Cliente", padding=10)
+        frame_busca.place(x=20, y=20, width=400, height=80)
+        
+        ttk.Label(frame_busca, text="Telefone:").grid(row=0, column=0)
+        self.entry_busca = ttk.Entry(frame_busca, width=25)
+        self.entry_busca.grid(row=0, column=1, padx=5)
+        self.entry_busca.bind('<KeyRelease>', self.buscar)
+        
+        ttk.Button(frame_busca, text="🔍 Buscar", command=self.buscar).grid(row=0, column=2)
+        
+        # Frame para treeview com scroll
+        frame_tree = ttk.Frame(self)
+        frame_tree.place(x=20, y=120, width=900, height=500)
+        
+        vsb = ttk.Scrollbar(frame_tree, orient="vertical")
+        hsb = ttk.Scrollbar(frame_tree, orient="horizontal")
+        
+        self.tree = ttk.Treeview(frame_tree, 
+                                 columns=("Nome", "Telefone", "Endereço", "Total Gasto", "Última Compra"),
+                                 show="headings",
+                                 yscrollcommand=vsb.set,
+                                 xscrollcommand=hsb.set)
+        
+        vsb.config(command=self.tree.yview)
+        hsb.config(command=self.tree.xview)
+        
+        self.tree.heading("Nome", text="Nome")
+        self.tree.heading("Telefone", text="Telefone")
+        self.tree.heading("Endereço", text="Endereço")
+        self.tree.heading("Total Gasto", text="Total Gasto")
+        self.tree.heading("Última Compra", text="Última Compra")
+        
+        self.tree.column("Nome", width=200, minwidth=150)
+        self.tree.column("Telefone", width=120, minwidth=100)
+        self.tree.column("Endereço", width=250, minwidth=200)
+        self.tree.column("Total Gasto", width=100, minwidth=80)
+        self.tree.column("Última Compra", width=150, minwidth=120)
+        
+        # Grid layout
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        
+        frame_tree.grid_rowconfigure(0, weight=1)
+        frame_tree.grid_columnconfigure(0, weight=1)
+        
+        ttk.Button(self, text="📊 Exportar Clientes", command=self.exportar).place(x=20, y=630)
+        ttk.Button(self, text="📱 WhatsApp", style="WhatsApp.TButton", 
+                  command=self.enviar_whatsapp).place(x=150, y=630)
+        ttk.Button(self, text="📧 Mensagem Promocional", command=self.enviar_promocao).place(x=270, y=630)
+        
+        self.atualizar()
+    
+    def buscar(self, event=None):
+        termo = self.entry_busca.get().lower()
+        self.tree.delete(*self.tree.get_children())
+        
+        for c in self.dados["clientes"]:
+            if not termo or termo in c["telefone"].lower() or termo in c["nome"].lower():
+                self.tree.insert("", "end", values=(
+                    c["nome"],
+                    formatar_telefone(c["telefone"]) if c["telefone"] else "",
+                    c["endereco"],
+                    formatar_valor(c.get("total_gasto", 0)),
+                    c.get("ultima_compra", "Nunca")
+                ))
+    
+    def enviar_whatsapp(self):
+        selecao = self.tree.selection()
+        if not selecao:
+            messagebox.showwarning("Aviso", "Selecione um cliente")
+            return
+        
+        valores = self.tree.item(selecao)['values']
+        nome = valores[0]
+        telefone = valores[1]
+        
+        if not telefone:
+            messagebox.showwarning("Aviso", "Cliente não possui telefone")
+            return
+        
+        telefone_num = re.sub(r'[^0-9]', '', telefone)
+        if not telefone_num:
+            messagebox.showwarning("Aviso", "Telefone inválido")
+            return
+        
+        # Janela para mensagem
+        janela_msg = tk.Toplevel(self)
+        janela_msg.title("Enviar Mensagem")
+        janela_msg.geometry("600x600")
+        janela_msg.configure(bg="#2e2e2e")
+        
+        ttk.Label(janela_msg, text=f"Mensagem para {nome}:").pack(pady=10)
+        
+        texto_msg = tk.Text(janela_msg, height=15, width=60, bg="#3a3a3a", fg="white")
+        texto_msg.pack(pady=10, padx=10)
+        
+        # Sugestões de mensagens
+        frame_sugestoes = ttk.Frame(janela_msg)
+        frame_sugestoes.pack(pady=5)
+        
+        def inserir_sugestao(sugestao):
+            texto_msg.insert(tk.END, sugestao)
+        
+        ttk.Button(frame_sugestoes, text="Promoção", 
+                  command=lambda: inserir_sugestao(f"Olá {nome}! 🍕 Temos promoções especiais hoje! Pizza grande a partir de R$ 35,00. Faça seu pedido!")).pack(side=tk.LEFT, padx=2)
+        
+        ttk.Button(frame_sugestoes, text="Fidelidade", 
+                  command=lambda: inserir_sugestao(f"Olá {nome}! Obrigado por ser nosso cliente! Você já gastou {valores[3]} conosco. Continue pedindo e acumule pontos!")).pack(side=tk.LEFT, padx=2)
+        
+        def enviar():
+            mensagem = texto_msg.get(1.0, tk.END).strip()
+            if mensagem:
+                enviar_whatsapp(telefone_num, mensagem)
+                messagebox.showinfo("Sucesso", "WhatsApp aberto com mensagem pronta!")
+                janela_msg.destroy()
+            else:
+                messagebox.showwarning("Aviso", "Digite uma mensagem")
+        
+        ttk.Button(janela_msg, text="Enviar via WhatsApp", command=enviar).pack(pady=10)
+    
+    def enviar_promocao(self):
+        """Envia mensagem promocional para cliente"""
+        selecao = self.tree.selection()
+        if not selecao:
+            messagebox.showwarning("Aviso", "Selecione um cliente")
+            return
+        
+        valores = self.tree.item(selecao)['values']
+        nome = valores[0]
+        telefone = valores[1]
+        
+        if not telefone:
+            messagebox.showwarning("Aviso", "Cliente não possui telefone")
+            return
+        
+        telefone_num = re.sub(r'[^0-9]', '', telefone)
+        if not telefone_num:
+            messagebox.showwarning("Aviso", "Telefone inválido")
+            return
+        
+        promocoes = [
+            f"Olá {nome}! 🍕 Hoje é dia de pizza! Compre 2 pizzas grandes e ganhe 1 refrigerante 2L!",
+            f"Olá {nome}! 🎉 Promoção relâmpago! 20% de desconto em pizzas grandes no pagamento em dinheiro!",
+            f"Olá {nome}! 🔥 Novidade! Experimente nossa nova pizza de calabresa especial!",
+            f"Olá {nome}! ⚡ Entrega grátis em pedidos acima de R$ 50,00! Aproveite!"
+        ]
+        
+        import random
+        mensagem = random.choice(promocoes)
+        
+        enviar_whatsapp(telefone_num, mensagem)
+        messagebox.showinfo("Sucesso", "WhatsApp aberto com mensagem promocional!")
+    
+    def atualizar(self):
+        self.buscar()
+    
+    def exportar(self):
+        if not self.dados["clientes"]:
+            messagebox.showwarning("Aviso", "Nenhum cliente para exportar")
+            return
+        
+        sucesso, caminho = exportar_para_excel(self.dados["clientes"], "clientes")
+        if sucesso:
+            messagebox.showinfo("Sucesso", f"Clientes exportados para:\n{caminho}")
+        else:
+            messagebox.showerror("Erro", f"Falha na exportação: {caminho}")
+
+# =========================
+# ABA SABORES
+# =========================
+
+class AbaSabores(ttk.Frame):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.dados = app.dados
+        self.setup_ui()
+        
+    def setup_ui(self):
+        ttk.Label(self, text="Nome do sabor").place(x=20, y=20)
+        self.entry_nome = ttk.Entry(self, width=25)
+        self.entry_nome.place(x=150, y=20)
+
+        ttk.Label(self, text="Valor (R$)").place(x=20, y=60)
+        self.entry_valor = ttk.Entry(self, width=25)
+        self.entry_valor.place(x=150, y=60)
+
+        self.tree = ttk.Treeview(self, columns=("Nome", "Valor"), show="headings", height=20)
+        self.tree.heading("Nome", text="Sabor")
+        self.tree.heading("Valor", text="Valor")
+        self.tree.place(x=20, y=120, width=400, height=500)
+
+        ttk.Button(self, text="➕ Adicionar", command=self.adicionar).place(x=20, y=630)
+        ttk.Button(self, text="✏️ Editar", command=self.editar).place(x=120, y=630)
+        ttk.Button(self, text="🗑️ Excluir", command=self.excluir).place(x=200, y=630)
+        
+        self.atualizar()
+    
+    def adicionar(self):
+        nome = self.entry_nome.get()
+        if not nome:
+            messagebox.showerror("Erro", "Nome do sabor é obrigatório")
+            return
+        
+        valido, resultado = validar_valor(self.entry_valor.get())
+        if not valido:
+            messagebox.showerror("Erro", resultado)
+            return
+        
+        self.dados["sabores"].append({"nome": nome, "preco": resultado})
+        self.app.db.salvar(self.dados)
+        
+        self.entry_nome.delete(0, tk.END)
+        self.entry_valor.delete(0, tk.END)
+        self.atualizar()
+        if hasattr(self.app, 'aba_pedidos'):
+            self.app.aba_pedidos.atualizar_combobox()
+        
+        self.app.preco_sabor.cache_clear()
+    
+    def editar(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Aviso", "Selecione um sabor")
+            return
+        
+        idx = self.tree.index(sel)
+        sabor = self.dados["sabores"][idx]
+        
+        root = self.winfo_toplevel()
+        root.lift()
+        root.focus_force()
+        
+        nome = simpledialog.askstring("Editar Sabor", "Nome:", initialvalue=sabor["nome"], parent=self)
+        if nome is None:
+            return
+        
+        if not nome:
+            messagebox.showerror("Erro", "Nome não pode ser vazio")
+            return
+        
+        root.lift()
+        root.focus_force()
+        
+        valor_str = simpledialog.askstring("Editar Sabor", "Valor (R$):", 
+                                          initialvalue=str(sabor["preco"]).replace('.', ','), 
+                                          parent=self)
+        if valor_str is None:
+            return
+        
+        valido, valor = validar_valor(valor_str)
+        if not valido:
+            messagebox.showerror("Erro", valor)
+            return
+        
+        self.dados["sabores"][idx] = {"nome": nome, "preco": valor}
+        self.app.db.salvar(self.dados)
+        self.atualizar()
+        if hasattr(self.app, 'aba_pedidos'):
+            self.app.aba_pedidos.atualizar_combobox()
+        self.app.preco_sabor.cache_clear()
+    
+    def excluir(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Aviso", "Selecione um sabor")
+            return
+        
+        if messagebox.askyesno("Confirmar", "Deseja realmente excluir este sabor?"):
+            idx = self.tree.index(sel)
+            del self.dados["sabores"][idx]
+            self.app.db.salvar(self.dados)
+            self.atualizar()
+            if hasattr(self.app, 'aba_pedidos'):
+                self.app.aba_pedidos.atualizar_combobox()
+            self.app.preco_sabor.cache_clear()
+    
+    def atualizar(self):
+        self.tree.delete(*self.tree.get_children())
+        for s in self.dados["sabores"]:
+            self.tree.insert("", "end", values=(s["nome"], formatar_valor(s["preco"])))
+
+# =========================
+# ABA BEBIDAS
+# =========================
+
+class AbaBebidas(ttk.Frame):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.dados = app.dados
+        self.setup_ui()
+        
+    def setup_ui(self):
+        ttk.Label(self, text="Nome da bebida").place(x=20, y=20)
+        self.entry_nome = ttk.Entry(self, width=25)
+        self.entry_nome.place(x=150, y=20)
+
+        ttk.Label(self, text="Valor (R$)").place(x=20, y=60)
+        self.entry_valor = ttk.Entry(self, width=25)
+        self.entry_valor.place(x=150, y=60)
+
+        self.tree = ttk.Treeview(self, columns=("Nome", "Valor"), show="headings", height=20)
+        self.tree.heading("Nome", text="Bebida")
+        self.tree.heading("Valor", text="Valor")
+        self.tree.place(x=20, y=120, width=400, height=500)
+
+        ttk.Button(self, text="➕ Adicionar", command=self.adicionar).place(x=20, y=630)
+        ttk.Button(self, text="✏️ Editar", command=self.editar).place(x=120, y=630)
+        ttk.Button(self, text="🗑️ Excluir", command=self.excluir).place(x=200, y=630)
+        
+        self.atualizar()
+    
+    def adicionar(self):
+        nome = self.entry_nome.get()
+        if not nome:
+            messagebox.showerror("Erro", "Nome da bebida é obrigatório")
+            return
+        
+        valido, resultado = validar_valor(self.entry_valor.get())
+        if not valido:
+            messagebox.showerror("Erro", resultado)
+            return
+        
+        self.dados["bebidas"].append({"nome": nome, "preco": resultado})
+        self.app.db.salvar(self.dados)
+        
+        self.entry_nome.delete(0, tk.END)
+        self.entry_valor.delete(0, tk.END)
+        self.atualizar()
+        if hasattr(self.app, 'aba_pedidos'):
+            self.app.aba_pedidos.atualizar_combobox()
+    
+    def editar(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Aviso", "Selecione uma bebida")
+            return
+        
+        idx = self.tree.index(sel)
+        bebida = self.dados["bebidas"][idx]
+        
+        root = self.winfo_toplevel()
+        root.lift()
+        root.focus_force()
+        
+        nome = simpledialog.askstring("Editar Bebida", "Nome:", initialvalue=bebida["nome"], parent=self)
+        if nome is None:
+            return
+        
+        if not nome:
+            messagebox.showerror("Erro", "Nome não pode ser vazio")
+            return
+        
+        root.lift()
+        root.focus_force()
+        
+        valor_str = simpledialog.askstring("Editar Bebida", "Valor (R$):", 
+                                          initialvalue=str(bebida["preco"]).replace('.', ','), 
+                                          parent=self)
+        if valor_str is None:
+            return
+        
+        valido, valor = validar_valor(valor_str)
+        if not valido:
+            messagebox.showerror("Erro", valor)
+            return
+        
+        self.dados["bebidas"][idx] = {"nome": nome, "preco": valor}
+        self.app.db.salvar(self.dados)
+        self.atualizar()
+        if hasattr(self.app, 'aba_pedidos'):
+            self.app.aba_pedidos.atualizar_combobox()
+    
+    def excluir(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Aviso", "Selecione uma bebida")
+            return
+        
+        if messagebox.askyesno("Confirmar", "Deseja realmente excluir esta bebida?"):
+            idx = self.tree.index(sel)
+            del self.dados["bebidas"][idx]
+            self.app.db.salvar(self.dados)
+            self.atualizar()
+            if hasattr(self.app, 'aba_pedidos'):
+                self.app.aba_pedidos.atualizar_combobox()
+    
+    def atualizar(self):
+        self.tree.delete(*self.tree.get_children())
+        for b in self.dados["bebidas"]:
+            self.tree.insert("", "end", values=(b["nome"], formatar_valor(b["preco"])))
+
+# =========================
+# ABA VENDAS
+# =========================
+
+class AbaVendas(ttk.Frame):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.dados = app.dados
+        self.setup_ui()
+        
+    def setup_ui(self):
+        frame_filtros = ttk.LabelFrame(self, text="Filtros", padding=10)
+        frame_filtros.place(x=20, y=20, width=900, height=80)
+        
+        ttk.Label(frame_filtros, text="Data Início:").grid(row=0, column=0, padx=5)
+        self.entry_data_ini = ttk.Entry(frame_filtros, width=15)
+        self.entry_data_ini.grid(row=0, column=1, padx=5)
+        self.entry_data_ini.insert(0, (datetime.now() - timedelta(days=30)).strftime("%d/%m/%Y"))
+        
+        ttk.Label(frame_filtros, text="Data Fim:").grid(row=0, column=2, padx=5)
+        self.entry_data_fim = ttk.Entry(frame_filtros, width=15)
+        self.entry_data_fim.grid(row=0, column=3, padx=5)
+        self.entry_data_fim.insert(0, datetime.now().strftime("%d/%m/%Y"))
+        
+        ttk.Button(frame_filtros, text="🔍 Filtrar", command=self.filtrar).grid(row=0, column=4, padx=5)
+        ttk.Button(frame_filtros, text="📊 Exportar", command=self.exportar).grid(row=0, column=5, padx=5)
+        
+        # Frame para treeview com scroll
+        frame_tree = ttk.Frame(self)
+        frame_tree.place(x=20, y=120, width=1300, height=500)
+        
+        vsb = ttk.Scrollbar(frame_tree, orient="vertical")
+        hsb = ttk.Scrollbar(frame_tree, orient="horizontal")
+        
+        self.tree = ttk.Treeview(frame_tree, 
+                                 columns=("Data", "Cliente", "Telefone", "Itens", "Pagamento", "Total", "Status"),
+                                 show="headings",
+                                 yscrollcommand=vsb.set,
+                                 xscrollcommand=hsb.set)
+        
+        vsb.config(command=self.tree.yview)
+        hsb.config(command=self.tree.xview)
+        
+        self.tree.heading("Data", text="Data")
+        self.tree.heading("Cliente", text="Cliente")
+        self.tree.heading("Telefone", text="Telefone")
+        self.tree.heading("Itens", text="Itens")
+        self.tree.heading("Pagamento", text="Pagamento")
+        self.tree.heading("Total", text="Total")
+        self.tree.heading("Status", text="Status")
+        
+        self.tree.column("Data", width=120, minwidth=100)
+        self.tree.column("Cliente", width=150, minwidth=120)
+        self.tree.column("Telefone", width=120, minwidth=100)
+        self.tree.column("Itens", width=250, minwidth=200)
+        self.tree.column("Pagamento", width=120, minwidth=100)
+        self.tree.column("Total", width=100, minwidth=80)
+        self.tree.column("Status", width=100, minwidth=80)
+        
+        # Grid layout
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        
+        frame_tree.grid_rowconfigure(0, weight=1)
+        frame_tree.grid_columnconfigure(0, weight=1)
+        
+        self.label_total = ttk.Label(self, text="Total do período: R$ 0,00", 
+                                     font=("Segoe UI", 12, "bold"))
+        self.label_total.place(x=20, y=630)
+        
+        self.atualizar()
+    
+    def filtrar(self):
+        data_ini = self.entry_data_ini.get()
+        data_fim = self.entry_data_fim.get()
+        
+        if not validar_data(data_ini)[0] or not validar_data(data_fim)[0]:
+            messagebox.showerror("Erro", "Datas inválidas")
+            return
+        
+        self.tree.delete(*self.tree.get_children())
+        total_periodo = 0
+        
+        for v in self.dados["vendas"]:
+            data_venda = datetime.strptime(v["data"].split()[0], "%d/%m/%Y")
+            data_ini_dt = datetime.strptime(data_ini, "%d/%m/%Y")
+            data_fim_dt = datetime.strptime(data_fim, "%d/%m/%Y")
+            
+            if data_ini_dt <= data_venda <= data_fim_dt:
+                # Compatibilidade com formato antigo e novo
+                if "itens" in v:
+                    itens_str = "\n".join(v["itens"])
+                elif "pizzas" in v:
+                    itens_str = "\n".join(v["pizzas"])
+                elif "pizza" in v:
+                    itens_str = v["pizza"]
+                else:
+                    itens_str = "Item não especificado"
+                
+                pagamento_info = v["pagamento"]
+                if v.get("precisa_troco", False) and v.get("troco_para", 0) > 0:
+                    pagamento_info += f"\n(Troco p/ R$ {v['troco_para']:.2f})"
+                
+                self.tree.insert("", "end", values=(
+                    v["data"],
+                    v["cliente"],
+                    formatar_telefone(v.get("telefone", "")),
+                    itens_str,
+                    pagamento_info,
+                    formatar_valor(v["total"]),
+                    v.get("status", "Pendente")
+                ))
+                total_periodo += v["total"]
+        
+        self.label_total.config(text=f"Total do período: {formatar_valor(total_periodo)}")
+    
+    def atualizar(self):
+        self.entry_data_ini.delete(0, tk.END)
+        self.entry_data_ini.insert(0, (datetime.now() - timedelta(days=30)).strftime("%d/%m/%Y"))
+        self.entry_data_fim.delete(0, tk.END)
+        self.entry_data_fim.insert(0, datetime.now().strftime("%d/%m/%Y"))
+        self.filtrar()
+    
+    def exportar(self):
+        if not self.dados["vendas"]:
+            messagebox.showwarning("Aviso", "Nenhuma venda para exportar")
+            return
+        
+        vendas_filtradas = []
+        data_ini = datetime.strptime(self.entry_data_ini.get(), "%d/%m/%Y")
+        data_fim = datetime.strptime(self.entry_data_fim.get(), "%d/%m/%Y")
+        
+        for v in self.dados["vendas"]:
+            data_venda = datetime.strptime(v["data"].split()[0], "%d/%m/%Y")
+            if data_ini <= data_venda <= data_fim:
+                vendas_filtradas.append(v)
+        
+        if not vendas_filtradas:
+            messagebox.showwarning("Aviso", "Nenhuma venda no período selecionado")
+            return
+        
+        sucesso, caminho = exportar_para_excel(vendas_filtradas, "vendas")
+        if sucesso:
+            messagebox.showinfo("Sucesso", f"Vendas exportadas para:\n{caminho}")
+        else:
+            messagebox.showerror("Erro", f"Falha na exportação: {caminho}")
+
+# =========================
+# ABA RELATÓRIOS
+# =========================
+
+class AbaRelatorios(ttk.Frame):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.dados = app.dados
+        self.setup_ui()
+        
+    def setup_ui(self):
+        frame_periodo = ttk.LabelFrame(self, text="Período do Relatório", padding=10)
+        frame_periodo.place(x=20, y=20, width=500, height=100)
+        
+        ttk.Label(frame_periodo, text="Data Início:").grid(row=0, column=0, padx=5)
+        self.entry_data_ini = ttk.Entry(frame_periodo, width=15)
+        self.entry_data_ini.grid(row=0, column=1, padx=5)
+        self.entry_data_ini.insert(0, (datetime.now() - timedelta(days=30)).strftime("%d/%m/%Y"))
+        
+        ttk.Label(frame_periodo, text="Data Fim:").grid(row=0, column=2, padx=5)
+        self.entry_data_fim = ttk.Entry(frame_periodo, width=15)
+        self.entry_data_fim.grid(row=0, column=3, padx=5)
+        self.entry_data_fim.insert(0, datetime.now().strftime("%d/%m/%Y"))
+        
+        ttk.Button(frame_periodo, text="📊 Gerar Relatórios", 
+                  command=self.gerar_relatorios).grid(row=1, column=0, columnspan=4, pady=10)
+        
+        frame_resumo = ttk.LabelFrame(self, text="Resumo do Período", padding=10)
+        frame_resumo.place(x=20, y=140, width=500, height=200)
+        
+        self.text_resumo = tk.Text(frame_resumo, height=8, width=60, bg="#3a3a3a", fg="white")
+        self.text_resumo.pack(fill="both", expand=True)
+        
+        frame_top = ttk.LabelFrame(self, text="Produtos Mais Vendidos", padding=10)
+        frame_top.place(x=550, y=20, width=400, height=320)
+        
+        self.tree_top = ttk.Treeview(frame_top, columns=("Produto", "Quantidade", "Tipo"), 
+                                     show="headings", height=12)
+        self.tree_top.heading("Produto", text="Produto")
+        self.tree_top.heading("Quantidade", text="Quantidade")
+        self.tree_top.heading("Tipo", text="Tipo")
+        
+        self.tree_top.column("Produto", width=150)
+        self.tree_top.column("Quantidade", width=100)
+        self.tree_top.column("Tipo", width=100)
+        
+        self.tree_top.pack(fill="both", expand=True)
+        
+        ttk.Button(self, text="📥 Exportar Resumo", command=self.exportar_resumo).place(x=20, y=350)
+        ttk.Button(self, text="📥 Exportar Top Produtos", command=self.exportar_top).place(x=150, y=350)
+        
+        self.gerar_relatorios()
+    
+    def gerar_relatorios(self):
+        data_ini = self.entry_data_ini.get()
+        data_fim = self.entry_data_fim.get()
+        
+        if not validar_data(data_ini)[0] or not validar_data(data_fim)[0]:
+            messagebox.showerror("Erro", "Datas inválidas")
+            return
+        
+        data_ini_dt = datetime.strptime(data_ini, "%d/%m/%Y")
+        data_fim_dt = datetime.strptime(data_fim, "%d/%m/%Y")
+        
+        vendas_periodo = []
+        for v in self.dados["vendas"]:
+            data_venda = datetime.strptime(v["data"].split()[0], "%d/%m/%Y")
+            if data_ini_dt <= data_venda <= data_fim_dt:
+                vendas_periodo.append(v)
+        
+        if not vendas_periodo:
+            self.text_resumo.delete(1.0, tk.END)
+            self.text_resumo.insert(1.0, "Nenhuma venda no período selecionado.")
+            return
+        
+        total_vendas = len(vendas_periodo)
+        total_faturado = sum(v["total"] for v in vendas_periodo)
+        media_por_venda = total_faturado / total_vendas if total_vendas > 0 else 0
+        total_taxas = sum(v.get("taxa_entrega", 0) for v in vendas_periodo)
+        total_pizzas = sum(v.get("total_pizzas", 0) for v in vendas_periodo)
+        total_bebidas = sum(v.get("total_bebidas", 0) for v in vendas_periodo)
+        
+        pagamentos = {}
+        for v in vendas_periodo:
+            pag = v["pagamento"].split()[0] if " " in v["pagamento"] else v["pagamento"]
+            pagamentos[pag] = pagamentos.get(pag, 0) + 1
+        
+        # Estatísticas por status
+        status_count = {}
+        for v in vendas_periodo:
+            status = v.get("status", "Pendente")
+            status_count[status] = status_count.get(status, 0) + 1
+        
+        # Contagem de produtos
+        produtos_count = {}
+        for v in vendas_periodo:
+            itens = v.get("itens", [])
+            if not itens and "pizzas" in v:
+                itens = v["pizzas"]
+            
+            for item in itens:
+                import re
+                match = re.match(r'(\d+)x\s*(.+)', item)
+                if match:
+                    qtd = int(match.group(1))
+                    produto = match.group(2)
+                    
+                    if "Pizza" in produto or "pizza" in produto:
+                        tipo = "Pizza"
+                        if "1/2" in produto:
+                            sabores = re.findall(r'1/2\s*([^/]+)', produto)
+                            for s in sabores:
+                                s = s.strip()
+                                key = f"{s} (Pizza)"
+                                produtos_count[key] = produtos_count.get(key, 0) + qtd
+                        else:
+                            nome = produto.replace("Pizza ", "").replace("pizza ", "")
+                            key = f"{nome} (Pizza)"
+                            produtos_count[key] = produtos_count.get(key, 0) + qtd
+                    else:
+                        key = f"{produto} (Bebida)"
+                        produtos_count[key] = produtos_count.get(key, 0) + qtd
+        
+        self.text_resumo.delete(1.0, tk.END)
+        resumo = f"""
+📊 RELATÓRIO DO PERÍODO: {data_ini} a {data_fim}
+{'='*50}
+
+📈 Estatísticas Gerais:
+   • Total de Vendas: {total_vendas}
+   • Total Faturado: {formatar_valor(total_faturado)}
+   • Total em Pizzas: {formatar_valor(total_pizzas)}
+   • Total em Bebidas: {formatar_valor(total_bebidas)}
+   • Total em Taxas: {formatar_valor(total_taxas)}
+   • Média por Venda: {formatar_valor(media_por_venda)}
+
+📊 Status dos Pedidos:
+"""
+        for status, qtd in status_count.items():
+            percentual = (qtd / total_vendas) * 100
+            resumo += f"   • {status}: {qtd} pedidos ({percentual:.1f}%)\n"
+
+        resumo += f"""
+💳 Formas de Pagamento:
+"""
+        for pag, qtd in pagamentos.items():
+            percentual = (qtd / total_vendas) * 100
+            resumo += f"   • {pag}: {qtd} vendas ({percentual:.1f}%)\n"
+        
+        self.text_resumo.insert(1.0, resumo)
+        
+        self.tree_top.delete(*self.tree_top.get_children())
+        produtos_ordenados = sorted(produtos_count.items(), key=lambda x: x[1], reverse=True)[:10]
+        
+        for produto, qtd in produtos_ordenados:
+            tipo = "Pizza" if "(Pizza)" in produto else "Bebida"
+            nome = produto.replace(" (Pizza)", "").replace(" (Bebida)", "")
+            self.tree_top.insert("", "end", values=(
+                nome, qtd, tipo
+            ))
+    
+    def exportar_resumo(self):
+        resumo = self.text_resumo.get(1.0, tk.END)
+        
+        try:
+            caminho = os.path.join(EXPORT_DIR, f"resumo_{datetime.now():%Y%m%d_%H%M}.txt")
+            with open(caminho, 'w', encoding='utf-8') as f:
+                f.write(resumo)
+            messagebox.showinfo("Sucesso", f"Resumo exportado para:\n{caminho}")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Falha ao exportar: {e}")
+    
+    def exportar_top(self):
+        dados_top = []
+        for item in self.tree_top.get_children():
+            valores = self.tree_top.item(item)['values']
+            dados_top.append({
+                "Produto": valores[0],
+                "Quantidade": valores[1],
+                "Tipo": valores[2]
+            })
+        
+        if not dados_top:
+            messagebox.showwarning("Aviso", "Nenhum dado para exportar")
+            return
+        
+        sucesso, caminho = exportar_para_excel(dados_top, "top_produtos")
+        if sucesso:
+            messagebox.showinfo("Sucesso", f"Top produtos exportados para:\n{caminho}")
+        else:
+            messagebox.showerror("Erro", f"Falha na exportação: {caminho}")
+
+# =========================
+# INICIAR APLICAÇÃO
+# =========================
+
+if __name__ == "__main__":
+    # Mostra informações de debug
+    print("=" * 50)
+    print("INICIANDO SISTEMA PIZZARIA")
+    print("=" * 50)
+    print(f"Diretório base: {BASE_DIR}")
+    print(f"Arquivo dados: {ARQUIVO}")
+    print(f"Pasta backups: {BACKUP_DIR}")
+    print(f"Pasta exports: {EXPORT_DIR}")
+    print("=" * 50)
+    
+    try:
+        app = PizzariaApp()
+        app.run()
+    except Exception as e:
+        messagebox.showerror("Erro Fatal", f"Erro ao iniciar aplicação:\n{str(e)}\n\nO programa será fechado.")
+        print(f"ERRO: {e}")
+        import traceback
+        traceback.print_exc()
